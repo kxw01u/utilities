@@ -1,0 +1,448 @@
+# record_keeper_qt_v4_3.py
+# Cross-compatible (PyQt6 / PySide6)
+# Fixes:
+# 1) Buttons always present after reload/refresh (signals blocked during restore + full rebind).
+# 2) Project color background applies immediately and persists on reload.
+# 3) Layout persistence (window geometry, column widths & order) is reliable.
+# Extras kept: drag/drop with level recompute; inline Case# tagline; color column "C"; Refresh button.
+
+USE_PYSIDE = False  # True → PySide6, False → PyQt6
+
+import os, json, random
+
+if USE_PYSIDE:
+    from PySide6.QtWidgets import (
+        QApplication, QWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout,
+        QPushButton, QHBoxLayout, QLineEdit, QFileDialog, QHeaderView, QFrame,
+        QStyledItemDelegate, QColorDialog
+    )
+    from PySide6.QtGui import QPalette, QColor, QPainter, QTextDocument, QStyle
+    from PySide6.QtCore import Qt, QByteArray
+else:
+    from PyQt6.QtWidgets import (
+        QApplication, QWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout,
+        QPushButton, QHBoxLayout, QLineEdit, QFileDialog, QHeaderView, QFrame,
+        QStyledItemDelegate, QStyle, QColorDialog
+    )
+    from PyQt6.QtGui import QPalette, QColor, QPainter, QTextDocument
+    from PyQt6.QtCore import Qt, QByteArray
+
+
+ROLE_LEVEL = Qt.ItemDataRole.UserRole
+ROLE_CASE  = Qt.ItemDataRole.UserRole + 1
+
+COL_PROJECT, COL_COLOR, COL_LEVEL = 0, 1, 2
+COL_FIRST_FIELD = 3
+COL_ACTION = COL_FIRST_FIELD + 10  # 10 fields + Action
+
+
+# ---------------- Delegate: project + tagline ----------------
+class ProjectDelegate(QStyledItemDelegate):
+    def __init__(self, tree, color_map):
+        super().__init__(tree)
+        self.tree = tree
+        self.color_map = color_map
+
+    def paint(self, painter, option, index):
+        project = index.data() or ""
+        case_tag = index.data(ROLE_CASE) or ""
+        item = self.tree.itemFromIndex(index)
+
+        # soft selection
+        if option.state & QStyle.StateFlag.State_Selected:
+            painter.fillRect(option.rect, QColor("#dbeafe"))
+
+        if not project and not case_tag:
+            super().paint(painter, option, index)
+            return
+
+        color = self.color_map.get(project, "#000000")
+        is_parent = item is not None and item.childCount() > 0
+        bold = "bold" if is_parent else "normal"
+        tagline = f'<span style="color:#aaa;font-size:11px;font-style:italic;"> {case_tag}</span>' if case_tag else ""
+        html = f'<span style="color:{color};font-weight:{bold};">{project}</span>{tagline}'
+
+        doc = QTextDocument()
+        doc.setHtml(html)
+        painter.save()
+        painter.translate(option.rect.left() + 6, option.rect.top() + 4)
+        doc.drawContents(painter)
+        painter.restore()
+
+
+# ---------------- Tree with drop handling ----------------
+class DragAwareTree(QTreeWidget):
+    def __init__(self, recompute_hook=None):
+        super().__init__()
+        self.recompute_hook = recompute_hook
+
+    def dropEvent(self, event):
+        super().dropEvent(event)
+        self.recompute_levels()
+        if self.recompute_hook:
+            self.recompute_hook()
+
+    def recompute_levels(self):
+        def set_levels(it, lvl):
+            it.setData(COL_PROJECT, ROLE_LEVEL, lvl)
+            it.setText(COL_LEVEL, f"L{lvl}")
+            for i in range(it.childCount()):
+                set_levels(it.child(i), min(lvl + 1, 9))
+        for i in range(self.topLevelItemCount()):
+            set_levels(self.topLevelItem(i), 0)
+
+
+# ---------------- Main widget ----------------
+class RecordKeeper(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Record Keeper v4.3")
+        self.resize(1500, 820)
+        self.data_file = os.path.join(os.path.dirname(__file__), "records.json")
+
+        # state
+        self.seq = 0
+        self.color_map = {}
+        self._updating = False
+        self.column_order = None
+        self.column_widths = None
+
+        # layout
+        layout = QVBoxLayout(self)
+        top = QHBoxLayout(); layout.addLayout(top)
+
+        self.address = QLineEdit(self.data_file); self.address.setReadOnly(True)
+        self.btn_file = QPushButton("Change File")
+        sep = QFrame(); sep.setFrameShape(QFrame.Shape.VLine); sep.setStyleSheet("background:#ccc;width:1px;")
+
+        style = """
+        QPushButton{background:#0078d7;color:white;font-weight:bold;
+                    padding:6px 16px;border-radius:6px;border:none;}
+        QPushButton:hover{background:#005fa3;} QPushButton:pressed{background:#004b82;}
+        """
+        self.btn_add = QPushButton("➕ Add Root"); self.btn_add.setStyleSheet(style)
+        self.btn_save = QPushButton("💾 Save");    self.btn_save.setStyleSheet(style)
+        self.btn_refresh = QPushButton("🔄 Refresh"); self.btn_refresh.setStyleSheet(style)
+
+        top.addWidget(self.address); top.addWidget(self.btn_file); top.addWidget(sep)
+        top.addWidget(self.btn_add); top.addWidget(self.btn_save); top.addWidget(self.btn_refresh); top.addStretch(1)
+
+        # tree
+        self.tree = DragAwareTree(recompute_hook=self.after_drop)
+        layout.addWidget(self.tree)
+
+        self.headers = ["Project", "C", "Level"] + [f"Field{i+1}" for i in range(10)] + ["Action"]
+        self.tree.setHeaderLabels(self.headers)
+        header = self.tree.header()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header.setSectionsMovable(True)
+
+        # drag & drop
+        self.tree.setDragEnabled(True)
+        self.tree.setAcceptDrops(True)
+        self.tree.setDragDropMode(QTreeWidget.DragDropMode.InternalMove)
+        self.tree.setDefaultDropAction(Qt.DropAction.MoveAction)
+
+        # delegate & style
+        self.delegate = ProjectDelegate(self.tree, self.color_map)
+        self.tree.setItemDelegateForColumn(COL_PROJECT, self.delegate)
+        self.apply_style()
+        self.set_default_widths()
+
+        # signals
+        self.btn_add.clicked.connect(self.add_root)
+        self.btn_save.clicked.connect(self.save_all)
+        self.btn_refresh.clicked.connect(self.refresh)
+        self.btn_file.clicked.connect(self.change_file)
+        self.tree.itemChanged.connect(self.on_edit)
+        self.tree.itemClicked.connect(self.on_click)
+        header.sectionMoved.connect(self.capture_layout)
+        header.sectionResized.connect(self.capture_layout)
+
+        # load & restore
+        self.load_all()
+        self.restore_layout()
+        # ensure buttons are bound after load
+        self.rebind_all_buttons()
+        # ensure colors applied on load
+        self.apply_all_project_backgrounds()
+
+    # ---------- style ----------
+    def apply_style(self):
+        self.tree.setStyleSheet("""
+        QTreeWidget{gridline-color:gray;border:1px solid #ccc;}
+        QHeaderView::section{background:#e9e9e9;border:1px solid #bbb;padding:4px;font-weight:bold;}
+        QTreeWidget::item:selected{background:#dbeafe;color:black;}
+        """)
+        pal = self.tree.palette()
+        pal.setColor(QPalette.ColorRole.Base, QColor("#fff"))
+        pal.setColor(QPalette.ColorRole.AlternateBase, QColor("#e6f2ff"))
+        pal.setColor(QPalette.ColorRole.Highlight, QColor("#dbeafe"))
+        pal.setColor(QPalette.ColorRole.HighlightedText, QColor("#000"))
+        self.tree.setPalette(pal)
+
+    def set_default_widths(self):
+        widths = [320, 40, 80] + [140]*10 + [120]
+        for i, w in enumerate(widths):
+            self.tree.setColumnWidth(i, w)
+
+    # ---------- helpers ----------
+    def next_seq(self): self.seq += 1; return self.seq
+    def rand_color(self): return "#{:06x}".format(random.randint(0,0xFFFFFF))
+
+    def make_item(self, project="", level=0):
+        row = [project, "🎨", f"L{level}"] + [""]*10 + [""]
+        it = QTreeWidgetItem(row)
+        it.setData(COL_PROJECT, ROLE_LEVEL, level)
+        it.setData(COL_PROJECT, ROLE_CASE, "")
+        it.setFlags(it.flags() | Qt.ItemFlag.ItemIsEditable)
+        return it
+
+    def iterate_items(self, parent=None):
+        items = []
+        if parent is None:
+            for i in range(self.tree.topLevelItemCount()):
+                items.append(self.tree.topLevelItem(i))
+        else:
+            for i in range(parent.childCount()):
+                items.append(parent.child(i))
+        for it in list(items):
+            yield it
+            yield from self.iterate_items(it)
+
+    # ---------- buttons ----------
+    def add_buttons(self, it):
+        box = QWidget(); lay = QHBoxLayout(box)
+        lay.setContentsMargins(0,0,0,0); lay.setSpacing(6)
+        addb = QPushButton("+"); addb.setFlat(True)
+        addb.setStyleSheet("color:#008000;font-weight:800;font-size:14px;background:transparent;border:none;")
+        addb.clicked.connect(lambda: self.add_child(it))
+        delb = QPushButton("-"); delb.setFlat(True)
+        delb.setStyleSheet("color:#d00000;font-weight:800;font-size:14px;background:transparent;border:none;")
+        delb.clicked.connect(lambda: self.del_item(it))
+        lay.addStretch(1); lay.addWidget(addb); lay.addWidget(delb)
+        self.tree.setItemWidget(it, COL_ACTION, box)
+
+    def rebind_all_buttons(self):
+        for it in self.iterate_items():
+            self.add_buttons(it)
+
+    # ---------- actions ----------
+    def add_root(self):
+        it = self.make_item("", 0)
+        self.tree.addTopLevelItem(it)
+        self.add_buttons(it)
+        self.save_all()
+
+    def add_child(self, parent):
+        lvl = (parent.data(COL_PROJECT, ROLE_LEVEL) or 0) + 1
+        proj = parent.text(COL_PROJECT).strip()
+        it = self.make_item(proj, lvl)
+        parent.addChild(it); parent.setExpanded(True)
+        self.add_buttons(it)
+        if proj:
+            if proj not in self.color_map:
+                self.color_map[proj] = self.rand_color()
+            case = f"{proj}_L{lvl}_{self.next_seq():02d}"
+            self.safe_set(it, ROLE_CASE, case)
+            # apply background
+            self.apply_project_background(it, proj)
+        self.mark_bold(parent, True)
+        self.tree.recompute_levels()
+        self.save_all()
+
+    def del_item(self, it):
+        par = it.parent()
+        if par: par.removeChild(it); self.mark_bold(par, par.childCount()>0)
+        else: self.tree.takeTopLevelItem(self.tree.indexOfTopLevelItem(it))
+        self.save_all()
+
+    # ---------- color handlers ----------
+    def on_click(self, it, col):
+        if col == COL_COLOR:
+            proj = it.text(COL_PROJECT).strip()
+            if not proj: return
+            cur = QColor(self.color_map.get(proj, "#ffffff"))
+            color = QColorDialog.getColor(cur, self, "Select Color")
+            if color.isValid():
+                color_hex = color.name()
+                self.color_map[proj] = color_hex
+                # apply to all rows with this project
+                self.apply_color_to_project(proj, color_hex)
+                self.tree.viewport().update()
+                self.save_all()
+
+    def apply_color_to_project(self, proj, color_hex):
+        for it in self.iterate_items():
+            if it.text(COL_PROJECT).strip() == proj:
+                it.setBackground(COL_PROJECT, QColor(color_hex))
+
+    def apply_project_background(self, it, proj):
+        color_hex = self.color_map.get(proj)
+        if color_hex:
+            it.setBackground(COL_PROJECT, QColor(color_hex))
+
+    def apply_all_project_backgrounds(self):
+        for it in self.iterate_items():
+            self.apply_project_background(it, it.text(COL_PROJECT).strip())
+
+    # ---------- edit handlers ----------
+    def on_edit(self, it, col):
+        if self._updating or col != COL_PROJECT: return
+        proj = it.text(COL_PROJECT).strip()
+        lvl = it.data(COL_PROJECT, ROLE_LEVEL) or 0
+        if proj and proj not in self.color_map:
+            self.color_map[proj] = self.rand_color()
+        # apply color background
+        self.apply_project_background(it, proj)
+        # regenerate Case# keeping suffix if present
+        old_case = it.data(COL_PROJECT, ROLE_CASE)
+        suffix = old_case.split("_")[-1] if old_case else f"{self.next_seq():02d}"
+        case = f"{proj}_L{lvl}_{suffix}"
+        self.safe_set(it, ROLE_CASE, case)
+        self.tree.viewport().update()
+        self.save_all()
+
+    def safe_set(self, it, role, val):
+        self._updating = True
+        self.tree.blockSignals(True)
+        it.setData(COL_PROJECT, role, val)
+        self.tree.blockSignals(False)
+        self._updating = False
+
+    def mark_bold(self, it, bold=True):
+        f = it.font(COL_PROJECT); f.setBold(bold); it.setFont(COL_PROJECT, f)
+
+    # ---------- persistence ----------
+    def capture_layout(self, *a):
+        h = self.tree.header()
+        self.column_order = [h.visualIndex(i) for i in range(self.tree.columnCount())]
+        self.column_widths = [h.sectionSize(i) for i in range(self.tree.columnCount())]
+
+    def restore_layout(self):
+        h = self.tree.header()
+        if self.column_order and len(self.column_order) == self.tree.columnCount():
+            for logical, visual in reversed(list(enumerate(self.column_order))):
+                cur = h.visualIndex(logical)
+                if cur != visual: h.moveSection(cur, visual)
+        if self.column_widths and len(self.column_widths) == self.tree.columnCount():
+            for i, w in enumerate(self.column_widths): self.tree.setColumnWidth(i, w)
+
+    def dump_tree(self, parent=None):
+        items = [self.tree.topLevelItem(i) for i in range(self.tree.topLevelItemCount())] if not parent else [parent.child(i) for i in range(parent.childCount())]
+        arr=[]
+        for it in items:
+            arr.append({
+                "values":[it.text(i) for i in range(self.tree.columnCount()-1)],
+                "level":it.data(COL_PROJECT,ROLE_LEVEL),
+                "case":it.data(COL_PROJECT,ROLE_CASE),
+                "children":self.dump_tree(it)
+            })
+        return arr
+
+    def restore_tree(self, data, parent=None):
+        # Block signals during rebuild to avoid partial on_edit triggers
+        self.tree.blockSignals(True)
+        try:
+            for d in data:
+                proj = d["values"][COL_PROJECT]
+                lvl = d.get("level",0)
+                it=self.make_item(proj,lvl)
+                for i,v in enumerate(d["values"]): it.setText(i,v)
+                self.safe_set(it,ROLE_CASE,d.get("case",""))
+                # apply background if color exists
+                self.apply_project_background(it, proj)
+                if parent: parent.addChild(it)
+                else: self.tree.addTopLevelItem(it)
+                self.add_buttons(it)
+                self.restore_tree(d.get("children",[]),it)
+                if it.childCount()>0:self.mark_bold(it,True)
+                it.setExpanded(True)
+        finally:
+            self.tree.blockSignals(False)
+        self.tree.recompute_levels()
+
+    def save_all(self):
+        self.capture_layout()
+        # Geometry handling (works in both PyQt6 & PySide6)
+        geom_hex = None
+        try:
+            # PyQt6 path
+            geom_hex = self.saveGeometry().data().hex()
+        except Exception:
+            try:
+                # PySide6 path
+                geom_hex = self.saveGeometry().toHex().data().decode()
+            except Exception:
+                geom_hex = None
+        data={
+            "seq":self.seq,
+            "colors":self.color_map,
+            "records":self.dump_tree(),
+            "column_order":self.column_order,
+            "column_widths":self.column_widths,
+            "window_geometry":geom_hex
+        }
+        with open(self.data_file,"w",encoding="utf-8") as f: json.dump(data,f,indent=2,ensure_ascii=False)
+
+    def load_all(self):
+        if not os.path.exists(self.data_file): return
+        try:
+            with open(self.data_file,"r",encoding="utf-8") as f:
+                d=json.load(f)
+            self.seq=d.get("seq",0)
+            self.color_map=d.get("colors",{})
+            self.column_order=d.get("column_order")
+            self.column_widths=d.get("column_widths")
+            geom=d.get("window_geometry")
+            self.tree.clear()
+            self.restore_tree(d.get("records",[]))
+            # restore geometry
+            if geom:
+                try:
+                    ba = QByteArray.fromHex(bytes(geom,"utf-8"))
+                    self.restoreGeometry(ba)
+                except Exception:
+                    try:
+                        self.restoreGeometry(QByteArray(bytes.fromhex(geom)))
+                    except Exception:
+                        pass
+        except Exception as e:
+            print("load fail",e)
+
+    def refresh(self):
+        # Soft reload: save, clear, load, restore layout, rebind buttons, reapply color backgrounds
+        self.save_all()
+        self.load_all()
+        self.restore_layout()
+        self.rebind_all_buttons()
+        self.apply_all_project_backgrounds()
+        self.tree.viewport().update()
+
+    def after_drop(self):
+        # Update case tags to reflect new level (keep ## suffix)
+        def update(it):
+            proj=it.text(COL_PROJECT).strip()
+            lvl=it.data(COL_PROJECT,ROLE_LEVEL) or 0
+            case=it.data(COL_PROJECT,ROLE_CASE)
+            if proj and case:
+                suffix=case.split("_")[-1]
+                new=f"{proj}_L{lvl}_{suffix}"
+                self.safe_set(it,ROLE_CASE,new)
+            for i in range(it.childCount()): update(it.child(i))
+        for i in range(self.tree.topLevelItemCount()): update(self.tree.topLevelItem(i))
+
+    # ---------- file ----------
+    def change_file(self):
+        fn,_=QFileDialog.getSaveFileName(self,"Choose File",self.data_file,"JSON Files (*.json)")
+        if fn: self.data_file=fn; self.address.setText(fn); self.save_all()
+
+    def closeEvent(self,e):
+        self.save_all(); e.accept()
+
+
+if __name__=="__main__":
+    import sys
+    app=QApplication(sys.argv)
+    w=RecordKeeper(); w.show()
+    sys.exit(app.exec())
