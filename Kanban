@@ -151,7 +151,8 @@ class DateInputWidget(QWidget):
         self.btn_icon = QPushButton("📅")
         self.btn_icon.setFixedSize(24, 24)
         self.btn_icon.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_icon.setStyleSheet("QPushButton { border: none; background: transparent; font-size: 16px; } QPushButton:hover { background: #999; border-radius: 4px; }")
+        # Transparent background for the icon button by default
+        self.btn_icon.setStyleSheet("QPushButton { border: none; background: transparent; font-size: 16px; }")
         self.btn_icon.clicked.connect(self.show_calendar)
 
         layout.addWidget(self.line_edit)
@@ -229,10 +230,10 @@ class TaskCardWidget(QWidget):
         self.lbl_prio.setStyleSheet("color: white; border-radius: 4px; font-weight: bold; font-size: 11px;")
         
         self.lbl_name = QLabel()
-        self.lbl_name.setStyleSheet("font-weight: bold; font-size: 13px; color: #333; border: none;")
+        self.lbl_name.setStyleSheet("font-weight: bold; font-size: 13px; border: none;")
         
         self.lbl_info = QLabel()
-        self.lbl_info.setStyleSheet("color: #777; font-size: 11px; border: none;")
+        self.lbl_info.setStyleSheet("font-size: 11px; border: none;")
 
         v_box.addWidget(self.lbl_prio)
         v_box.addWidget(self.lbl_name, 1)
@@ -253,7 +254,6 @@ class TaskCardWidget(QWidget):
         self.edit_name.returnPressed.connect(lambda: self.save_edit(force_close=True))
         self.edit_name.editingFinished.connect(lambda: self.save_edit(force_close=False))
         
-        # NEW: PIC Input
         self.edit_pic = QLineEdit()
         self.edit_pic.setPlaceholderText("PIC")
         self.edit_pic.setFixedWidth(50)
@@ -273,15 +273,12 @@ class TaskCardWidget(QWidget):
 
         e_box.addWidget(self.btn_prio_edit)
         e_box.addWidget(self.edit_name)
-        e_box.addWidget(self.edit_pic) # Added PIC
+        e_box.addWidget(self.edit_pic)
         e_box.addWidget(self.edit_start)
         e_box.addWidget(self.edit_duration)
 
         self.stack.addWidget(self.view_widget)
         self.stack.addWidget(self.edit_widget)
-
-        # Default style
-        self.apply_card_style("white")
 
         if is_new:
             self.start_edit()
@@ -289,29 +286,49 @@ class TaskCardWidget(QWidget):
             self.update_view_from_data()
             self.stack.setCurrentWidget(self.view_widget)
 
-    def apply_card_style(self, bg_color):
-        """Central styling method to ensure consistent look."""
-        self.container.setStyleSheet(f"""
-            QWidget#CardContainer {{
-                background-color: {bg_color}; 
-                border: 1px solid #E0E0E0;
-                border-radius: 6px;
-            }}
-            QLineEdit {{ 
-                border: 1px solid transparent; 
-                border-bottom: 1px solid #ccc;
-                background: transparent;
-                selection-background-color: #2196F3;
-            }}
-            QLineEdit:focus {{ border-bottom: 1px solid #2196F3; }}
-        """)
-
     def set_status_style(self, status):
-        # Determine background based on status
+        # Apply strict styling
         if status in ["Done", "Cancelled"]:
-            self.apply_card_style("#E0E0E0") # Gray
+            # GRAY MODE
+            bg_color = "#E0E0E0"
+            border_color = "#BDBDBD"
+            text_color = "#666"
+            
+            # We force transparency on children so the gray background shows through everywhere
+            self.setStyleSheet(f"""
+                QWidget#CardContainer {{
+                    background-color: {bg_color}; 
+                    border: 1px solid {border_color};
+                    border-radius: 6px;
+                }}
+                /* Force nested widgets to be transparent */
+                QWidget {{ background: transparent; }}
+                QLineEdit {{ 
+                    background: transparent; 
+                    color: {text_color}; 
+                    border: none; 
+                    border-bottom: 1px solid #999;
+                }}
+                QLabel {{ color: {text_color}; background: transparent; }}
+            """)
         else:
-            self.apply_card_style("white") # White
+            # NORMAL WHITE MODE
+            self.setStyleSheet("""
+                QWidget#CardContainer {
+                    background-color: white; 
+                    border: 1px solid #E0E0E0;
+                    border-radius: 6px;
+                }
+                /* Reset transparency for normal operation */
+                QLineEdit { 
+                    border: 1px solid transparent; 
+                    border-bottom: 1px solid #eee;
+                    background: transparent;
+                    color: #333;
+                }
+                QLineEdit:focus { border-bottom: 1px solid #2196F3; }
+                QLabel { color: #333; }
+            """)
 
     def update_view_from_data(self):
         p_text = self.data.get('priority', '3 - Low')
@@ -439,7 +456,6 @@ class KanbanColumn(QTreeWidget):
             child = parent_item.child(i)
             c_data = child.data(0, Qt.ItemDataRole.UserRole)
             if not c_data: continue
-            
             c_start = parse_date(c_data.get('start', ''))
             c_end = parse_date(c_data.get('end', ''))
             if c_start:
@@ -482,7 +498,7 @@ class KanbanColumn(QTreeWidget):
 
     def create_card(self, item, data, is_new):
         widget = TaskCardWidget(data, is_new)
-        widget.set_status_style(self.status_type) # Set color
+        widget.set_status_style(self.status_type) 
         widget.dataChanged.connect(lambda d: self.on_task_data_changed(item, d))
         widget.requestSave.connect(lambda: self.contentChanged.emit())
         widget.sizeChanged.connect(self.report_height)
@@ -590,6 +606,7 @@ class ProjectRow(QFrame):
         p_main.addLayout(bottom_layout)
         p_main.addStretch()
         
+        # Columns with Status Types
         self.col_todo = KanbanColumn("#E3F2FD", "Todo")
         self.col_wip = KanbanColumn("#FFF8E1", "WIP")
         self.col_done = KanbanColumn("#E8F5E9", "Done")
@@ -647,7 +664,7 @@ CSV_FILE = "kanban_data.csv"
 class KanbanBoard(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Dynamic Kanban Board v29 (Gray Status + PIC)")
+        self.setWindowTitle("Dynamic Kanban Board v30 (Fully Gray + PIC)")
         
         self.settings = QSettings("MyCompany", "KanbanApp")
         geom = self.settings.value("geometry")
