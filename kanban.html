@@ -1,0 +1,2083 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kanban Task Manager</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    
+    <!-- Babel for JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <style>
+        /* Custom scrollbar for better aesthetics */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #f1f1f1; 
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #c1c1c1; 
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #a8a8a8; 
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <div id="root"></div>
+
+    <script type="text/babel" data-type="module">
+        import React, { useState, useEffect, useMemo, useRef } from 'https://esm.sh/react@18.2.0';
+        import ReactDOM from 'https://esm.sh/react-dom@18.2.0/client';
+        import { 
+            LayoutDashboard, 
+            FolderKanban, 
+            Plus, 
+            Search, 
+            X, 
+            Check, 
+            RotateCcw, 
+            Trash2, 
+            Calendar, 
+            Clock, 
+            User, 
+            Briefcase, 
+            Layers, 
+            KanbanSquare, 
+            Palette, 
+            CheckCircle2, 
+            TrendingUp, 
+            Activity, 
+            PieChart, 
+            ArrowRight, 
+            CornerDownRight, 
+            Circle, 
+            Download, 
+            Upload, 
+            AlertCircle, 
+            ExternalLink, 
+            Sparkles, 
+            AlignLeft 
+        } from 'https://esm.sh/lucide-react@0.263.1';
+
+        // --- Utility Functions ---
+
+        const generateId = () => Math.random().toString(36).substr(2, 9);
+
+        const formatDate = (dateString) => {
+        if (!dateString) return '-';
+        const date = new Date(dateString);
+        if (isNaN(date.getTime())) return '-';
+
+        if (dateString.includes('-') && dateString.length === 10) {
+            const parts = dateString.split('-');
+            if (parts.length === 3) {
+                const localDate = new Date(parts[0], parts[1] - 1, parts[2]);
+                return localDate.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit' });
+            }
+        }
+        return date.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit' });
+        };
+
+        const calculateAge = (dateString) => {
+        if (!dateString) return 0;
+        const created = new Date(dateString);
+        if (isNaN(created.getTime())) return 0;
+        const now = new Date();
+        const diffTime = Math.abs(now - created);
+        const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+        return diffDays;
+        };
+
+        const getEndFromEffort = (start, effort) => {
+        if (!start || !effort) return '';
+        const date = new Date(start);
+        if (isNaN(date.getTime())) return '';
+
+        if (effort.includes('d')) date.setDate(date.getDate() + parseInt(effort));
+        else if (effort.includes('w')) date.setDate(date.getDate() + (parseInt(effort) * 7));
+        else if (effort.includes('m')) date.setMonth(date.getMonth() + parseInt(effort));
+        else date.setDate(date.getDate() + 1);
+
+        return date.toISOString().split('T')[0];
+        };
+
+        const isDateInCurrentWeek = (dateString) => {
+        if (!dateString) return false;
+
+        let d;
+        if (dateString.length === 10 && dateString.includes('-')) {
+            const [y, m, day] = dateString.split('-').map(Number);
+            d = new Date(y, m - 1, day);
+        } else {
+            d = new Date(dateString);
+        }
+
+        if (isNaN(d.getTime())) return false;
+
+        d.setHours(0,0,0,0);
+
+        const today = new Date();
+        today.setHours(0,0,0,0);
+
+        const dayOfWeek = today.getDay();
+        const diffToSun = dayOfWeek;
+
+        const sunday = new Date(today);
+        sunday.setDate(today.getDate() - diffToSun);
+        sunday.setHours(0,0,0,0);
+
+        const saturday = new Date(sunday);
+        saturday.setDate(sunday.getDate() + 6);
+        saturday.setHours(23,59,59,999);
+
+        return d >= sunday && d <= saturday;
+        };
+
+        const isTaskLeaf = (index, allTasks) => {
+        if (index === allTasks.length - 1) return true;
+        const currentLevel = allTasks[index].level || 0;
+        const nextLevel = allTasks[index + 1].level || 0;
+        return nextLevel <= currentLevel;
+        };
+
+        // --- Constants ---
+
+        const PRIORITY_CONFIG = {
+        '1': { label: 'Urgent', color: 'bg-red-100 text-red-700 border-red-200', dot: 'bg-red-500', selectColor: 'bg-red-500' },
+        '2': { label: 'High', color: 'bg-purple-100 text-purple-700 border-purple-200', dot: 'bg-purple-500', selectColor: 'bg-purple-500' },
+        '3': { label: 'Normal', color: 'bg-blue-100 text-blue-700 border-blue-200', dot: 'bg-blue-500', selectColor: 'bg-blue-500' },
+        '4': { label: 'Low', color: 'bg-emerald-100 text-emerald-700 border-emerald-200', dot: 'bg-emerald-500', selectColor: 'bg-emerald-500' },
+        };
+
+        const WEIGHT_CONFIG = {
+        'light': { label: 'Light', color: 'text-green-600', fill: 'bg-green-500', border: 'border-green-500' },
+        'medium': { label: 'Medium', color: 'text-purple-600', fill: 'bg-purple-500', border: 'border-purple-500' },
+        'heavy': { label: 'Heavy', color: 'text-red-600', fill: 'bg-red-600', border: 'border-red-600' },
+        };
+
+        const TASK_LINE_COLORS = [
+        'bg-gray-400', 'bg-red-500', 'bg-orange-500', 'bg-amber-500', 'bg-green-500', 'bg-teal-500', 'bg-blue-500', 'bg-indigo-500', 'bg-purple-500', 'bg-pink-500'
+        ];
+
+        const PROJECT_BG_COLORS = [
+        'bg-white', 'bg-red-100', 'bg-orange-100', 'bg-amber-100', 'bg-green-100', 'bg-teal-100', 'bg-blue-100', 'bg-indigo-100', 'bg-purple-100', 'bg-pink-100'
+        ];
+
+        const PROJECT_BORDER_COLORS = {
+        'bg-white': 'border-gray-200',
+        'bg-red-100': 'border-red-200',
+        'bg-orange-100': 'border-orange-200',
+        'bg-amber-100': 'border-amber-200',
+        'bg-green-100': 'border-green-200',
+        'bg-teal-100': 'border-teal-200',
+        'bg-blue-100': 'border-blue-200',
+        'bg-indigo-100': 'border-indigo-200',
+        'bg-purple-100': 'border-purple-200',
+        'bg-pink-100': 'border-pink-200'
+        };
+
+        // --- Sub-Components ---
+
+        const ColorPicker = ({ colors, onSelect, onClose }) => {
+        return (
+            <React.Fragment>
+            <div
+                className="fixed inset-0 z-[90]"
+                onMouseDown={(e) => { e.stopPropagation(); onClose(); }}
+                onClick={(e) => { e.stopPropagation(); onClose(); }}
+            ></div>
+            <div
+                className="absolute z-[100] mt-2 p-2 bg-white rounded-lg shadow-xl border border-gray-200 flex gap-2 w-auto animate-in fade-in zoom-in-95 duration-100 left-full top-0 ml-2"
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => { e.stopPropagation(); }}
+            >
+                {colors.map((color) => (
+                <button
+                    key={color}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                        e.stopPropagation();
+                        e.nativeEvent.stopImmediatePropagation();
+                        onSelect(color);
+                        onClose();
+                    }}
+                    className={`w-6 h-6 rounded-full ${color} hover:scale-110 transition-transform border border-black/10 shadow-sm shrink-0 cursor-pointer`}
+                />
+                ))}
+            </div>
+            </React.Fragment>
+        );
+        };
+
+        const DonutChart = ({ data, size = 120, showLegend = true }) => {
+        let accumulatedAngle = 0;
+        const total = data.reduce((acc, curr) => acc + curr.value, 0);
+
+        if (total === 0) return (
+            <div className={`flex items-center justify-center bg-gray-50 rounded-full mx-auto text-gray-400 text-xs`} style={{ width: size, height: size }}>
+            No Data
+            </div>
+        );
+
+        return (
+            <div className={`flex ${showLegend ? 'items-center justify-center gap-6' : 'flex-col items-center'}`}>
+            <div className="relative shrink-0" style={{ width: size, height: size }}>
+                <svg viewBox="0 0 100 100" className="transform -rotate-90 w-full h-full">
+                {data.map((slice, index) => {
+                    if (slice.value === 0) return null;
+                    const percentage = slice.value / total;
+                    const angle = percentage * 360;
+                    const largeArcFlag = percentage > 0.5 ? 1 : 0;
+                    const startX = 50 + 50 * Math.cos((Math.PI * accumulatedAngle) / 180);
+                    const startY = 50 + 50 * Math.sin((Math.PI * accumulatedAngle) / 180);
+                    accumulatedAngle += angle;
+                    const endX = 50 + 50 * Math.cos((Math.PI * accumulatedAngle) / 180);
+                    const endY = 50 + 50 * Math.sin((Math.PI * accumulatedAngle) / 180);
+
+                    return (
+                    <path
+                        key={index}
+                        d={`M 50 50 L ${startX} ${startY} A 50 50 0 ${largeArcFlag} 1 ${endX} ${endY} Z`}
+                        fill={slice.color}
+                        stroke="white"
+                        strokeWidth="1"
+                    />
+                    );
+                })}
+                <circle cx="50" cy="50" r="30" fill="white" />
+                </svg>
+                <div className="absolute inset-0 flex items-center justify-center flex-col">
+                <span className="text-xl font-bold text-gray-700">{total}</span>
+                </div>
+            </div>
+
+            {showLegend && (
+                <div className="space-y-1">
+                {data.map((slice, index) => (
+                    <div key={index} className="flex items-center gap-2 text-xs text-gray-600">
+                    <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: slice.color }}></div>
+                    <span className="truncate max-w-[100px]" title={slice.label}>{slice.label}</span>
+                    <span className="font-bold text-gray-400">({slice.value})</span>
+                    </div>
+                ))}
+                </div>
+            )}
+            </div>
+        );
+        };
+
+        const TaskCard = ({ task, onEdit, onDelete, onStatusChange, onColorChange, isColorPickerOpen, toggleColorPicker, onDropOnTask }) => {
+        const priority = PRIORITY_CONFIG[task.priority] || PRIORITY_CONFIG['3'];
+        const weightKey = task.weight || 'light';
+        const weight = WEIGHT_CONFIG[weightKey] || WEIGHT_CONFIG['light'];
+
+        const handleDragStart = (e) => {
+            e.dataTransfer.setData('taskId', task.id);
+            e.dataTransfer.effectAllowed = 'move';
+        };
+
+        const handleDragOver = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+        };
+
+        const handleDrop = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const droppedTaskId = e.dataTransfer.getData('taskId');
+            if (droppedTaskId && droppedTaskId !== task.id) {
+            onDropOnTask(droppedTaskId, task.id);
+            }
+        };
+
+        const getTargetDateColor = (targetDate, status) => {
+            if (!targetDate || status === 'done' || status === 'cancel') return '';
+
+            const today = new Date();
+            const offset = today.getTimezoneOffset();
+            const todayLocal = new Date(today.getTime() - (offset*60*1000));
+            const todayStr = todayLocal.toISOString().split('T')[0];
+
+            const nextWeek = new Date(todayLocal);
+            nextWeek.setDate(todayLocal.getDate() + 7);
+            const nextWeekStr = nextWeek.toISOString().split('T')[0];
+
+            if (targetDate < todayStr) {
+            return 'text-red-600 font-bold';
+            } else if (targetDate <= nextWeekStr) {
+            return 'text-blue-600 font-bold';
+            }
+            return '';
+        };
+
+        const targetDateColor = getTargetDateColor(task.targetDate, task.status);
+        const indentLevel = Math.min(task.level || 0, 9);
+        const indentStyle = { marginLeft: `${indentLevel * 20}px` };
+
+        return (
+            <div
+            draggable
+            onDragStart={handleDragStart}
+            onDragOver={handleDragOver}
+            onDrop={handleDrop}
+            onClick={(e) => {
+                e.stopPropagation();
+                onEdit(task);
+            }}
+            style={indentStyle}
+            className={`group bg-white rounded-lg shadow-sm border border-gray-200 hover:shadow-md transition-all cursor-pointer mb-1 active:scale-95 select-none relative overflow-visible flex ${indentLevel > 0 ? 'mt-1 border-l-4 border-l-blue-100' : ''}`}
+            >
+            {indentLevel > 0 && (
+                <div className="absolute -left-3 top-3 text-gray-300">
+                <CornerDownRight size={12} />
+                </div>
+            )}
+
+            <div className={`w-1.5 shrink-0 ${task.lineColor || 'bg-gray-300'} ${indentLevel === 0 ? 'rounded-l-lg' : ''}`}></div>
+
+            <div className="p-3 flex-1 overflow-hidden relative">
+                <div className="flex justify-between items-start mb-2">
+                <div className="flex items-center gap-2">
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium flex items-center gap-1 ${priority.color}`}>
+                    <div className={`w-1.5 h-1.5 rounded-full ${priority.dot}`}></div>
+                    {priority.label}
+                    {indentLevel > 0 && <span className="text-gray-400 ml-1">L{indentLevel}</span>}
+                    </span>
+                    {/* Weight Indicator Circle */}
+                    <div
+                    className={`w-3 h-3 rounded-full border border-gray-200/50 ${weight.fill} ring-1 ring-white/50 shadow-sm`}
+                    title={`Weight: ${weight.label}`}
+                    ></div>
+                </div>
+
+                <div className="flex gap-1 items-center relative z-30">
+                    <button
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        toggleColorPicker(task.id);
+                    }}
+                    className="p-1 hover:bg-gray-100 rounded-full text-gray-400 transition-all opacity-0 group-hover:opacity-100 z-30"
+                    title="Change Line Color"
+                    >
+                    <Palette size={12} />
+                    </button>
+
+                    {isColorPickerOpen && (
+                    <div
+                        className="absolute right-0 top-6 z-[60]"
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            e.nativeEvent.stopImmediatePropagation();
+                            e.preventDefault();
+                        }}
+                    >
+                        <div className="fixed inset-0 z-40" onClick={(e) => { e.stopPropagation(); toggleColorPicker(null); }}></div>
+                        <div className="absolute right-0 top-0 z-50 mt-2 p-2 bg-white rounded-lg shadow-xl border border-gray-200 flex gap-2 w-auto">
+                        {TASK_LINE_COLORS.map((color) => (
+                            <button
+                            key={color}
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                e.nativeEvent.stopImmediatePropagation();
+                                onColorChange(task.id, color);
+                                toggleColorPicker(null);
+                                }}
+                            className={`w-6 h-6 rounded-full ${color} hover:scale-110 transition-transform border border-black/10 shadow-sm shrink-0 cursor-pointer`}
+                            />
+                        ))}
+                        </div>
+                    </div>
+                    )}
+
+                    {task.assignee && (
+                    <div className="w-6 h-6 rounded-full bg-gray-100 flex items-center justify-center text-[10px] font-bold text-gray-600 border border-gray-200">
+                        {task.assignee.substring(0, 2).toUpperCase()}
+                    </div>
+                    )}
+                </div>
+                </div>
+
+                <div className="flex items-center gap-2 mb-1">
+                <h4 className="text-sm font-semibold text-gray-800 leading-snug truncate">{task.name}</h4>
+                {task.externalRef && (
+                    <span className="text-[10px] text-gray-400 bg-gray-100 px-1 rounded flex items-center gap-0.5">
+                    <ExternalLink size={8}/> {task.externalRef}
+                    </span>
+                )}
+                </div>
+
+                {/* Display Description (Truncated) */}
+                {task.description && (
+                <div className="text-[10px] text-gray-600 mb-2 line-clamp-2 leading-relaxed">
+                    {task.description}
+                </div>
+                )}
+
+                <div className="text-[10px] text-gray-500 mb-1 font-mono whitespace-nowrap overflow-hidden text-ellipsis flex items-center gap-2">
+                <span>C:{formatDate(task.createdAt)}</span>
+                <span>S:{formatDate(task.start)}</span>
+                <span className={`${targetDateColor}`}>T:{formatDate(task.targetDate)}</span>
+                {task.status === 'done' && <span className="text-green-600 font-bold">E:{formatDate(task.end)}</span>}
+                <span className="text-gray-400">| Age:{calculateAge(task.createdAt)}d</span>
+                {task.effort && <span className="text-blue-500">| Est:{task.effort}</span>}
+                </div>
+
+                {/* Fixed: Replaced hidden group-hover:flex with opacity transition for better interaction stability */}
+                <div className="flex gap-1 bg-white pl-2 absolute bottom-2 right-2 z-40 shadow-sm border border-gray-100 rounded-md p-0.5 opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none group-hover:pointer-events-auto">
+                {(task.status === 'todo' || task.status === 'wip') && (
+                    <>
+                    <button
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                        e.stopPropagation();
+                        e.nativeEvent.stopImmediatePropagation();
+                        e.preventDefault();
+                        onStatusChange(task.id, 'done');
+                        }}
+                        className="p-1.5 hover:bg-green-100 text-green-600 rounded-md transition-colors" title="Complete"
+                    >
+                        <Check size={14} />
+                    </button>
+                    <button
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                        e.stopPropagation();
+                        e.nativeEvent.stopImmediatePropagation();
+                        e.preventDefault();
+                        onStatusChange(task.id, 'cancel');
+                        }}
+                        className="p-1.5 hover:bg-gray-100 text-gray-600 rounded-md transition-colors" title="Cancel"
+                    >
+                        <X size={14} />
+                    </button>
+                    </>
+                )}
+                {(task.status === 'done' || task.status === 'cancel') && (
+                    <button
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                        e.stopPropagation();
+                        e.nativeEvent.stopImmediatePropagation();
+                        e.preventDefault();
+                        onStatusChange(task.id, 'todo');
+                    }}
+                    className="p-1.5 hover:bg-blue-100 text-blue-600 rounded-md transition-colors" title="Reopen"
+                    >
+                    <RotateCcw size={14} />
+                    </button>
+                )}
+                <button
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                    e.stopPropagation();
+                    e.nativeEvent.stopImmediatePropagation();
+                    e.preventDefault();
+                    onDelete(task.id);
+                    }}
+                    className="p-1.5 hover:bg-red-100 text-red-600 rounded-md transition-colors" title="Delete"
+                >
+                    <Trash2 size={14} />
+                </button>
+                </div>
+            </div>
+            </div>
+        );
+        };
+
+        // 3. Column Component
+        const KanbanColumn = ({
+        title,
+        status,
+        tasks,
+        color,
+        onDropTask,
+        onEditTask,
+        onDeleteTask,
+        onStatusChange,
+        onColorChange,
+        projectId,
+        activeColorPickerId,
+        setActiveColorPickerId,
+        onQuickAdd,
+        onDropOnTask
+        }) => {
+        const [isQuickAdding, setIsQuickAdding] = useState(false);
+        const [qName, setQName] = useState('');
+        const [qDescription, setQDescription] = useState(''); // Added Description State
+        const [qPIC, setQPIC] = useState('');
+        const [qPriority, setQPriority] = useState('3');
+        const [qWeight, setQWeight] = useState('light');
+        const [qStart, setQStart] = useState(new Date().toISOString().split('T')[0]);
+        const [qEffort, setQEffort] = useState('');
+
+        const nameInputRef = useRef(null);
+
+        const handleDragOver = (e) => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+        };
+
+        const handleDrop = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const taskId = e.dataTransfer.getData('taskId');
+            // Drop in column = Detach task (Level 0)
+            if (taskId) onDropTask(taskId, status, projectId);
+        };
+
+        const handleBackgroundClick = (e) => {
+            if (status === 'todo' && !isQuickAdding) {
+            if (e.target === e.currentTarget || e.target.classList.contains('min-h-[100px]')) {
+                setIsQuickAdding(true);
+                setQName('');
+                setQDescription('');
+                setQPIC('');
+                setQPriority('3');
+                setQWeight('light');
+                setQStart(new Date().toISOString().split('T')[0]);
+                setQEffort('');
+                setTimeout(() => nameInputRef.current?.focus(), 50);
+            }
+            }
+        };
+
+        const handleQuickAddSubmit = () => {
+            if (qName.trim()) {
+            onQuickAdd(projectId, {
+                name: qName.trim(),
+                description: qDescription.trim(),
+                pic: qPIC.trim(),
+                priority: qPriority,
+                weight: qWeight,
+                start: qStart,
+                effort: qEffort
+            });
+            setQName('');
+            setQDescription('');
+            setQPIC('');
+            setQEffort('');
+            setIsQuickAdding(false);
+            }
+        };
+
+        const handleCancelQuickAdd = () => {
+            setIsQuickAdding(false);
+            setQName('');
+            setQDescription('');
+        };
+
+        return (
+            <div
+            className="flex-1 min-w-[280px] flex flex-col h-full bg-white/40 rounded-lg border border-gray-200/60 backdrop-blur-sm transition-colors hover:bg-white/60"
+            onDragOver={handleDragOver}
+            onDrop={handleDrop}
+            onClick={handleBackgroundClick}
+            >
+            <div className={`flex items-center justify-between p-2 rounded-t-lg border-b-2 ${color} bg-white/60`}>
+                <h3 className="font-bold text-gray-700 text-xs uppercase tracking-wide">{title}</h3>
+                <span className="bg-gray-200 text-gray-600 text-[10px] font-bold px-1.5 py-0.5 rounded-full">{tasks.length}</span>
+            </div>
+
+            <div className="flex-1 p-2 min-h-[100px] flex flex-col gap-0">
+                {tasks.map(task => (
+                <TaskCard
+                    key={task.id}
+                    task={task}
+                    onEdit={onEditTask}
+                    onDelete={onDeleteTask}
+                    onStatusChange={onStatusChange}
+                    onColorChange={onColorChange}
+                    isColorPickerOpen={activeColorPickerId === task.id}
+                    toggleColorPicker={(id) => setActiveColorPickerId(id === activeColorPickerId ? null : id)}
+                    onDropOnTask={onDropOnTask}
+                />
+                ))}
+
+                {isQuickAdding && (
+                <div className="bg-white p-3 rounded-lg shadow-md border border-blue-400 mb-2 animate-in fade-in duration-200 flex flex-col gap-2" onClick={(e) => e.stopPropagation()}>
+                    <input
+                    ref={nameInputRef}
+                    type="text"
+                    className="w-full text-sm font-semibold outline-none border-b border-gray-100 pb-1"
+                    placeholder="Task Name"
+                    value={qName}
+                    onChange={(e) => setQName(e.target.value)}
+                    onKeyDown={(e) => { if(e.key === 'Enter') handleQuickAddSubmit(); if(e.key === 'Escape') handleCancelQuickAdd(); }}
+                    />
+                    
+                    {/* Added: Description Input */}
+                    <textarea
+                        className="w-full text-xs text-gray-600 outline-none border-b border-gray-100 pb-1 resize-none h-auto min-h-[1.5em]"
+                        placeholder="Description (optional)"
+                        rows={1}
+                        value={qDescription}
+                        onChange={(e) => setQDescription(e.target.value)}
+                        onKeyDown={(e) => { 
+                            if(e.key === 'Enter' && e.ctrlKey) handleQuickAddSubmit(); 
+                            if(e.key === 'Escape') handleCancelQuickAdd();
+                        }}
+                    />
+
+                    {/* Layout Update: Priority, Weight, PIC Horizontal */}
+                    <div className="flex flex-wrap items-center gap-2 bg-gray-50 p-2 rounded border border-gray-100">
+                    {/* Priority */}
+                    <div className="flex flex-col gap-1 border-r border-gray-200 pr-2">
+                        <label className="text-[10px] font-bold text-gray-400 uppercase">Priority</label>
+                        <div className="flex gap-1">
+                        {Object.entries(PRIORITY_CONFIG).map(([key, config]) => (
+                            <button
+                                key={key}
+                                type="button"
+                                onClick={() => setQPriority(key)}
+                                className={`w-4 h-4 rounded-full flex items-center justify-center transition-all ${config.selectColor} ${qPriority === key ? 'ring-1 ring-offset-1 ring-gray-400 scale-110' : 'opacity-40 hover:opacity-100'}`}
+                                title={config.label}
+                            />
+                        ))}
+                        </div>
+                    </div>
+
+                    {/* Weight */}
+                    <div className="flex flex-col gap-1 border-r border-gray-200 pr-2">
+                        <label className="text-[10px] font-bold text-gray-400 uppercase">Weight</label>
+                        <div className="flex gap-1">
+                        {Object.entries(WEIGHT_CONFIG).map(([key, config]) => (
+                            <button
+                                key={key}
+                                type="button"
+                                onClick={() => setQWeight(key)}
+                                className={`w-4 h-4 rounded-full flex items-center justify-center transition-all border border-gray-200 ${config.fill} ${qWeight === key ? 'ring-1 ring-offset-1 ring-gray-400 scale-110' : 'opacity-40 hover:opacity-100'}`}
+                                title={config.label}
+                            />
+                        ))}
+                        </div>
+                    </div>
+
+                    {/* PIC - Last in horizontal row */}
+                    <div className="flex-1 min-w-[60px] flex flex-col gap-1">
+                        <label className="text-[10px] font-bold text-gray-400 uppercase">PIC</label>
+                        <div className="flex items-center gap-1">
+                            <User size={12} className="text-gray-400"/>
+                            <input
+                                type="text"
+                                className="w-full text-xs bg-transparent outline-none text-gray-700 border-b border-transparent focus:border-blue-300 placeholder-gray-300"
+                                placeholder="Name"
+                                value={qPIC}
+                                onChange={(e) => setQPIC(e.target.value)}
+                                onKeyDown={(e) => { if(e.key === 'Enter') handleQuickAddSubmit(); }}
+                            />
+                        </div>
+                    </div>
+                    </div>
+                    
+                    {/* Updated Layout: Start Date, Effort, and Button on same horizontal line */}
+                    <div className="flex items-center gap-2">
+                    {/* Date */}
+                    <input
+                        type="date"
+                        className="text-xs bg-gray-50 border rounded p-1 w-24 shrink-0" 
+                        value={qStart}
+                        onChange={(e) => setQStart(e.target.value)}
+                    />
+                    
+                    {/* Effort */}
+                    <input
+                        type="text"
+                        className="flex-1 text-xs bg-gray-50 border rounded p-1 min-w-[60px]"
+                        placeholder="Effort"
+                        value={qEffort}
+                        onChange={(e) => setQEffort(e.target.value)}
+                        onKeyDown={(e) => { if(e.key === 'Enter') handleQuickAddSubmit(); }}
+                    />
+
+                    {/* Add Button */}
+                    <button
+                        onClick={handleQuickAddSubmit}
+                        className="bg-blue-600 text-white rounded p-1 hover:bg-blue-700 shrink-0"
+                    >
+                        <Plus size={16} />
+                    </button>
+                    </div>
+                </div>
+                )}
+
+                {tasks.length === 0 && !isQuickAdding && (
+                <div className="h-full flex items-center justify-center text-gray-400 text-xs italic min-h-[80px] pointer-events-none">
+                    {status === 'todo' ? 'Click here to add task' : 'Empty'}
+                </div>
+                )}
+            </div>
+            </div>
+        );
+        };
+
+        // 4. Task Modal
+        const TaskModal = ({ isOpen, onClose, task, onSave }) => {
+        if (!isOpen) return null;
+
+        const [formData, setFormData] = useState({
+            name: '',
+            assignee: '',
+            externalRef: '',
+            priority: '3',
+            weight: 'light',
+            start: new Date().toISOString().split('T')[0],
+            targetDate: '',
+            effort: '',
+            description: '',
+            lineColor: 'bg-blue-500'
+        });
+
+        useEffect(() => {
+            if (task) {
+            setFormData({
+                name: task.name || '',
+                assignee: task.assignee || '',
+                externalRef: task.externalRef || '',
+                priority: task.priority || '3',
+                weight: task.weight || 'light',
+                start: task.start || new Date().toISOString().split('T')[0],
+                targetDate: task.targetDate || '',
+                effort: task.effort || '',
+                description: task.description || '',
+                lineColor: task.lineColor || 'bg-blue-500'
+            });
+            } else {
+            setFormData({
+                name: '',
+                assignee: '',
+                externalRef: '',
+                priority: '3',
+                weight: 'light',
+                start: new Date().toISOString().split('T')[0],
+                targetDate: '',
+                effort: '',
+                description: '',
+                lineColor: 'bg-blue-500'
+            });
+            }
+        }, [task, isOpen]);
+
+        useEffect(() => {
+            if (formData.start && formData.effort) {
+            const newTarget = getEndFromEffort(formData.start, formData.effort);
+            setFormData(prev => ({ ...prev, targetDate: newTarget }));
+            }
+        }, [formData.start, formData.effort]);
+
+        const handleSubmit = (e) => {
+            e.preventDefault();
+            onSave(formData);
+            onClose();
+        };
+
+        return (
+            <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in duration-200">
+                <div className="flex justify-between items-center p-4 border-b bg-gray-50">
+                <h3 className="font-bold text-gray-800">{task ? 'Edit Task' : 'New Task'}</h3>
+                <button onClick={onClose} className="p-1 hover:bg-gray-200 rounded-full transition-colors">
+                    <X size={20} className="text-gray-500" />
+                </button>
+                </div>
+
+                <form onSubmit={handleSubmit} className="p-4 space-y-4">
+                <div>
+                    <label className="block text-xs font-semibold text-gray-500 uppercase mb-1">Task Name</label>
+                    <input
+                    required
+                    type="text"
+                    className="w-full p-2 border rounded-md focus:ring-2 focus:ring-blue-500 outline-none text-sm"
+                    placeholder="What needs to be done?"
+                    value={formData.name}
+                    onChange={e => setFormData({...formData, name: e.target.value})}
+                    autoFocus
+                    />
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                    <div>
+                    <label className="block text-xs font-semibold text-gray-500 uppercase mb-1">PIC</label>
+                    <div className="relative">
+                        <User size={14} className="absolute left-2.5 top-2.5 text-gray-400" />
+                        <input
+                        type="text"
+                        className="w-full pl-8 p-2 border rounded-md focus:ring-2 focus:ring-blue-500 outline-none text-sm"
+                        placeholder="Person In Charge"
+                        value={formData.assignee}
+                        onChange={e => setFormData({...formData, assignee: e.target.value})}
+                        />
+                    </div>
+                    </div>
+                    <div>
+                    <label className="block text-xs font-semibold text-gray-500 uppercase mb-1">External Ref#</label>
+                    <input
+                        type="text"
+                        className="w-full p-2 border rounded-md focus:ring-2 focus:ring-blue-500 outline-none text-sm"
+                        placeholder="e.g. JIRA-123"
+                        value={formData.externalRef}
+                        onChange={e => setFormData({...formData, externalRef: e.target.value})}
+                    />
+                    </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                    <div className="bg-gray-50 p-3 rounded-lg border border-gray-100">
+                        <label className="block text-xs font-bold text-gray-400 uppercase mb-2">Priority</label>
+                        <div className="flex gap-2">
+                        {Object.entries(PRIORITY_CONFIG).map(([key, config]) => (
+                            <button
+                                key={key}
+                                type="button"
+                                onClick={() => setFormData(prev => ({...prev, priority: key}))}
+                                className={`w-6 h-6 rounded-full flex items-center justify-center transition-all ${config.selectColor} ${formData.priority === key ? 'ring-2 ring-offset-2 ring-gray-400 scale-110 shadow-sm' : 'opacity-40 hover:opacity-100'}`}
+                                title={config.label}
+                            >
+                                {formData.priority === key && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+                            </button>
+                        ))}
+                        </div>
+                    </div>
+
+                    <div className="bg-gray-50 p-3 rounded-lg border border-gray-100">
+                        <label className="block text-xs font-bold text-gray-400 uppercase mb-2">Weight</label>
+                        <div className="flex gap-2">
+                        {Object.entries(WEIGHT_CONFIG).map(([key, config]) => (
+                            <button
+                                key={key}
+                                type="button"
+                                onClick={() => setFormData(prev => ({...prev, weight: key}))}
+                                className={`w-6 h-6 rounded-full flex items-center justify-center transition-all border border-gray-200 ${config.fill} ${formData.weight === key ? 'ring-2 ring-offset-2 ring-gray-400 scale-110 shadow-sm' : 'opacity-40 hover:opacity-100'}`}
+                                title={config.label}
+                            >
+                                {formData.weight === key && <Check size={10} className="text-white" />}
+                            </button>
+                        ))}
+                        </div>
+                    </div>
+                    </div>
+
+                <div className="grid grid-cols-3 gap-4">
+                    <div>
+                    <label className="block text-xs font-semibold text-gray-500 uppercase mb-1">Start Date (S)</label>
+                    <input
+                        type="date"
+                        className="w-full p-2 border rounded-md text-sm text-gray-600"
+                        value={formData.start}
+                        onChange={e => setFormData({...formData, start: e.target.value})}
+                    />
+                    </div>
+                    <div>
+                    <label className="block text-xs font-semibold text-gray-500 uppercase mb-1">Effort</label>
+                    <input
+                        type="text"
+                        className="w-full p-2 border rounded-md text-sm text-gray-600 bg-white"
+                        placeholder="e.g. 2d, 1w"
+                        value={formData.effort}
+                        onChange={e => setFormData({...formData, effort: e.target.value})}
+                    />
+                    </div>
+                    <div>
+                    <label className="block text-xs font-semibold text-gray-500 uppercase mb-1">Target Date (T)</label>
+                    <input
+                        type="date"
+                        className="w-full p-2 border rounded-md text-sm text-gray-600 bg-white"
+                        value={formData.targetDate}
+                        onChange={e => setFormData({...formData, targetDate: e.target.value})}
+                    />
+                    </div>
+                </div>
+
+                {/* Allow editing end date (E) if task is completed, otherwise read-only if effort is used */}
+                {(task && (task.status === 'done' || task.status === 'cancel')) && (
+                    <div className="mt-2">
+                        <label className="block text-xs font-semibold text-gray-500 uppercase mb-1 text-green-600">End Date (E)</label>
+                        <input
+                        type="date"
+                        className="w-full p-2 border rounded-md text-sm text-gray-600 bg-white"
+                        value={formData.end || ''} // Map from task.end
+                        onChange={e => setFormData({...formData, end: e.target.value})}
+                        />
+                    </div>
+                )}
+
+                <div className="mt-4">
+                    <label className="block text-xs font-semibold text-gray-500 uppercase mb-1">Description</label>
+                    <textarea
+                    className="w-full p-2 border rounded-md focus:ring-2 focus:ring-blue-500 outline-none text-sm h-24 resize-none"
+                    placeholder="Add details..."
+                    value={formData.description}
+                    onChange={e => setFormData({...formData, description: e.target.value})}
+                    />
+                </div>
+
+                <button type="submit" className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg shadow-lg shadow-blue-200 transition-all">
+                    {task ? 'Save Changes' : 'Create Task'}
+                </button>
+                </form>
+            </div>
+            </div>
+        );
+        };
+
+        // 5. Project Modal
+        const ProjectModal = ({ isOpen, onClose, onSave }) => {
+        const [name, setName] = useState('');
+        const [color, setColor] = useState('bg-white');
+
+        if (!isOpen) return null;
+
+        const handleSubmit = (e) => {
+            e.preventDefault();
+            if (name.trim()) {
+            onSave({ name, color });
+            setName('');
+            setColor('bg-white');
+            onClose();
+            }
+        };
+
+        return (
+            <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden animate-in fade-in zoom-in duration-200">
+                <div className="flex justify-between items-center p-4 border-b bg-gray-50">
+                <h3 className="font-bold text-gray-800">New Project</h3>
+                <button onClick={onClose} className="p-1 hover:bg-gray-200 rounded-full transition-colors">
+                    <X size={20} className="text-gray-500" />
+                </button>
+                </div>
+
+                <form onSubmit={handleSubmit} className="p-4 space-y-4">
+                <div>
+                    <label className="block text-xs font-semibold text-gray-500 uppercase mb-1">Project Name</label>
+                    <input
+                    required
+                    type="text"
+                    className="w-full p-2 border rounded-md focus:ring-2 focus:ring-blue-500 outline-none text-sm"
+                    placeholder="e.g. Marketing Launch"
+                    value={name}
+                    onChange={e => setName(e.target.value)}
+                    autoFocus
+                    />
+                </div>
+
+                <div>
+                    <label className="block text-xs font-semibold text-gray-500 uppercase mb-2">Background Color</label>
+                    <div className="grid grid-cols-5 gap-2">
+                    {PROJECT_BG_COLORS.map(c => (
+                        <button
+                        key={c}
+                        type="button"
+                        onClick={() => setColor(c)}
+                        className={`w-8 h-8 rounded-full border border-gray-200 ${c} ${color === c ? 'ring-2 ring-blue-500 ring-offset-2' : ''}`}
+                        />
+                    ))}
+                    </div>
+                </div>
+
+                <button type="submit" className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg shadow-lg shadow-blue-200 transition-all">
+                    Create Project
+                </button>
+                </form>
+            </div>
+            </div>
+        );
+        };
+
+        // --- Main App Component ---
+
+        function App() {
+        const [currentView, setCurrentView] = useState('dashboard');
+        const fileInputRef = useRef(null);
+
+        // Font Size / Zoom State
+        const [zoomLevel, setZoomLevel] = useState(() => {
+            try {
+                const saved = localStorage.getItem('kanban_zoom_level');
+                return saved ? parseFloat(saved) : 1;
+            } catch(e) {
+                return 1;
+            }
+        });
+
+        // Effect to handle Ctrl+Wheel for zoom
+        useEffect(() => {
+            const handleWheel = (e) => {
+            if (e.ctrlKey) {
+                e.preventDefault();
+                setZoomLevel(prev => {
+                let newZoom = prev - e.deltaY * 0.001;
+                newZoom = Math.min(Math.max(0.5, newZoom), 2); // Limit zoom between 0.5x and 2x
+                return newZoom;
+                });
+            }
+            };
+
+            window.addEventListener('wheel', handleWheel, { passive: false });
+            return () => window.removeEventListener('wheel', handleWheel);
+        }, []);
+
+        // Effect to save zoom to localStorage and apply style
+        useEffect(() => {
+            localStorage.setItem('kanban_zoom_level', zoomLevel);
+            document.documentElement.style.fontSize = `${16 * zoomLevel}px`; // Adjust base rem size
+        }, [zoomLevel]);
+
+        // Data State
+        const [projects, setProjects] = useState(() => {
+            try {
+            const saved = localStorage.getItem('kanban_data_v1');
+            return saved ? JSON.parse(saved) : [{ id: 'p1', name: 'Project Alpha', color: 'bg-white', tasks: [] }];
+            } catch (e) {
+            return [{ id: 'p1', name: 'Project Alpha', color: 'bg-white', tasks: [] }];
+            }
+        });
+
+        const [activeProjectId, setActiveProjectId] = useState(null);
+        const [searchQuery, setSearchQuery] = useState('');
+
+        // Modal State
+        const [isModalOpen, setIsModalOpen] = useState(false);
+        const [isProjectModalOpen, setIsProjectModalOpen] = useState(false);
+        const [editingTask, setEditingTask] = useState(null);
+
+        // Color Picker States
+        const [activeTaskColorPickerId, setActiveTaskColorPickerId] = useState(null);
+        const [activeProjectColorPickerId, setActiveProjectColorPickerId] = useState(null);
+
+        // Persistence
+        useEffect(() => {
+            localStorage.setItem('kanban_data_v1', JSON.stringify(projects));
+        }, [projects]);
+
+        // Actions
+        const handleAddProject = (projectData) => {
+            const newProj = {
+            id: generateId(),
+            name: projectData.name,
+            color: projectData.color,
+            tasks: []
+            };
+            setProjects(prev => [...prev, newProj]);
+            setCurrentView('ongoing');
+        };
+
+        const handleUpdateProjectColor = (projectId, newColor) => {
+            setProjects(prev => prev.map(p => p.id === projectId ? { ...p, color: newColor } : p));
+        };
+
+        const updateProject = (projectId, updater) => {
+            setProjects(prev => prev.map(p => {
+            if (p.id !== projectId) return p;
+            return updater(p);
+            }));
+        };
+
+        // Missing Function Fixed: deleteTask
+        const deleteTask = (taskId) => {
+            if (window.confirm("Are you sure you want to delete this task?")) {
+                setProjects(prev => prev.map(p => ({
+                    ...p,
+                    tasks: p.tasks.filter(t => t.id !== taskId)
+                })));
+            }
+        };
+
+        const deleteProject = (projectId) => {
+            if (confirm("Are you sure you want to delete this project and all its tasks?")) {
+                setProjects(prev => prev.filter(p => p.id !== projectId));
+            }
+        };
+
+        // Missing Function Fixed: exportToCSV
+        const exportToCSV = (projects) => {
+            const headers = ['Project', 'Task Name', 'External Ref', 'Status', 'Priority', 'Weight', 'Start Date', 'End Date', 'Created Date', 'Completed Date', 'Effort', 'Level'];
+            const rows = [];
+            projects.forEach(p => {
+                p.tasks.forEach(t => {
+                rows.push([
+                    `"${p.name}"`, 
+                    `"${t.name}"`, 
+                    `"${t.externalRef||''}"`, 
+                    t.status, 
+                    t.priority, 
+                    t.weight, 
+                    t.start, 
+                    t.end||'', 
+                    t.createdAt, 
+                    t.completedAt||'', 
+                    t.effort||'', 
+                    t.level||0
+                ].join(','));
+                });
+            });
+            const csvContent = "data:text/csv;charset=utf-8," + headers.join(',') + "\n" + rows.join('\n');
+            const encodedUri = encodeURI(csvContent);
+            const link = document.createElement("a");
+            link.setAttribute("href", encodedUri);
+            link.setAttribute("download", "kanban_data.csv");
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        };
+
+        // Quick add via clicking on Todo column
+        const handleQuickAddTask = (projectId, taskData) => {
+            if (!taskData.name || !projectId) return;
+            const now = new Date().toISOString();
+
+            let calculatedTarget = '';
+            if (taskData.effort) {
+            calculatedTarget = getEndFromEffort(taskData.start, taskData.effort);
+            }
+
+            updateProject(projectId, (project) => ({
+            ...project,
+            tasks: [...project.tasks, {
+                id: generateId(),
+                status: 'todo',
+                name: taskData.name,
+                description: taskData.description || '', // Added Description
+                assignee: taskData.pic || '',
+                priority: taskData.priority,
+                weight: taskData.weight,
+                start: taskData.start,
+                effort: taskData.effort,
+                targetDate: calculatedTarget,
+                createdAt: now,
+                projectId: projectId,
+                lineColor: 'bg-blue-500',
+                level: 0 // Default level 0
+            }]
+            }));
+        };
+
+        const handleSaveTask = (taskData) => {
+            const targetProjectId = activeProjectId || projects[0]?.id;
+            if (!targetProjectId) return;
+
+            const now = new Date().toISOString();
+
+            updateProject(targetProjectId, (project) => {
+            if (editingTask) {
+                return {
+                ...project,
+                tasks: project.tasks.map(t => t.id === editingTask.id ? { ...t, ...taskData } : t)
+                };
+            } else {
+                return {
+                ...project,
+                tasks: [...project.tasks, {
+                    ...taskData,
+                    id: generateId(),
+                    status: 'todo',
+                    createdAt: now,
+                    projectId: targetProjectId,
+                    level: 0
+                }]
+                };
+            }
+            });
+        };
+
+        // Helper to find all descendants of a task recursively (based on level and order)
+        const findDescendants = (allTasks, parentIndex, parentLevel) => {
+            const descendants = [];
+            for (let i = parentIndex + 1; i < allTasks.length; i++) {
+            const currentTask = allTasks[i];
+            if ((currentTask.level || 0) > parentLevel) {
+                descendants.push(currentTask);
+            } else {
+                break; // Stop when we hit a sibling or higher level task
+            }
+            }
+            return descendants;
+        };
+
+        const updateTaskStatus = (taskId, newStatus, targetProjectId) => {
+            setProjects(prev => {
+            let sourceProjectIndex = -1;
+            let taskIndex = -1;
+            let taskToMove = null;
+
+            for (let i = 0; i < prev.length; i++) {
+                const idx = prev[i].tasks.findIndex(t => t.id === taskId);
+                if (idx !== -1) {
+                sourceProjectIndex = i;
+                taskIndex = idx;
+                taskToMove = prev[i].tasks[idx];
+                break;
+                }
+            }
+
+            if (!taskToMove) return prev;
+
+            const newProjects = [...prev];
+            const now = new Date().toISOString();
+            const todayDate = now.split('T')[0];
+            const isDone = newStatus === 'done';
+
+            // Identify descendants to move with parent
+            const projectTasks = newProjects[sourceProjectIndex].tasks;
+            const descendants = findDescendants(projectTasks, taskIndex, taskToMove.level || 0);
+            const idsToMove = [taskToMove.id, ...descendants.map(d => d.id)];
+
+            // Calculate level shift needed to make the moved task Level 0 (root of column)
+            // while preserving relative hierarchy for descendants
+            const currentRootLevel = taskToMove.level || 0;
+            const levelShift = 0 - currentRootLevel;
+
+            // If moving across projects, remove all involved tasks from source
+            if (targetProjectId && targetProjectId !== newProjects[sourceProjectIndex].id) {
+                // Remove tasks from source
+                const tasksToKeep = projectTasks.filter(t => !idsToMove.includes(t.id));
+                newProjects[sourceProjectIndex].tasks = tasksToKeep;
+
+                const targetProj = newProjects.find(p => p.id === targetProjectId);
+
+                if (targetProj) {
+                idsToMove.forEach(id => {
+                    const t = (id === taskToMove.id) ? taskToMove : descendants.find(d => d.id === id);
+                    
+                    // Apply level shift
+                    const oldLevel = t.level || 0;
+                    const newLevel = Math.max(0, oldLevel + levelShift);
+
+                    const updatedT = {
+                    ...t,
+                    status: newStatus,
+                    completedAt: isDone ? now : undefined,
+                    end: isDone ? todayDate : t.end,
+                    level: newLevel
+                    };
+                    targetProj.tasks.push(updatedT);
+                });
+                }
+            } else {
+                // Same project status update
+                idsToMove.forEach(id => {
+                const tIndex = projectTasks.findIndex(t => t.id === id);
+                if (tIndex !== -1) {
+                    
+                    // Apply level shift
+                    const oldLevel = projectTasks[tIndex].level || 0;
+                    const newLevel = Math.max(0, oldLevel + levelShift);
+
+                    projectTasks[tIndex] = {
+                    ...projectTasks[tIndex],
+                    status: newStatus,
+                    completedAt: isDone ? now : undefined,
+                    end: isDone ? todayDate : projectTasks[tIndex].end,
+                    level: newLevel
+                    };
+                }
+                });
+            }
+
+            return newProjects;
+            });
+        };
+
+        // Handle drop ONTO another task to create subtask (level+1)
+        const handleDropOnTask = (droppedTaskId, targetTaskId) => {
+            setProjects(prev => {
+            let sourceProjectIndex = -1;
+            let taskIndex = -1;
+            let taskToMove = null;
+
+            // Find dragged task
+            for (let i = 0; i < prev.length; i++) {
+                const idx = prev[i].tasks.findIndex(t => t.id === droppedTaskId);
+                if (idx !== -1) {
+                sourceProjectIndex = i;
+                taskIndex = idx;
+                taskToMove = prev[i].tasks[idx];
+                break;
+                }
+            }
+
+            if (!taskToMove) return prev;
+
+            // Find target task (parent)
+            let targetProjectIndex = -1;
+            let targetTaskIndex = -1;
+            let targetTask = null;
+            for (let i = 0; i < prev.length; i++) {
+                const idx = prev[i].tasks.findIndex(t => t.id === targetTaskId);
+                if (idx !== -1) {
+                targetProjectIndex = i;
+                targetTaskIndex = idx;
+                targetTask = prev[i].tasks[idx];
+                break;
+                }
+            }
+
+            if (!targetTask) return prev;
+
+            // Only allow nesting if same project and same status column
+            if (sourceProjectIndex !== targetProjectIndex || taskToMove.status !== targetTask.status) {
+                return prev;
+            }
+
+            const newProjects = [...prev];
+            const projectTasks = newProjects[sourceProjectIndex].tasks;
+
+            // Remove dragged task
+            projectTasks.splice(taskIndex, 1);
+
+            // Calculate new level (parent + 1), max 9
+            const newLevel = Math.min((targetTask.level || 0) + 1, 9);
+
+            // Find new insertion index: immediately after parent
+            // Note: we must find index again because splice might have shifted it
+            const newTargetIndex = projectTasks.findIndex(t => t.id === targetTaskId);
+
+            const updatedTask = {
+                ...taskToMove,
+                level: newLevel
+            };
+
+            // Insert after target
+            projectTasks.splice(newTargetIndex + 1, 0, updatedTask);
+
+            return newProjects;
+            });
+        };
+
+        const updateTaskColor = (taskId, newColor) => {
+            setProjects(prev => prev.map(p => ({
+            ...p,
+            tasks: p.tasks.map(t => t.id === taskId ? { ...t, lineColor: newColor } : t)
+            })));
+        };
+
+        const openNewTaskModal = (projectId) => {
+            setActiveProjectId(projectId);
+            setEditingTask(null);
+            setIsModalOpen(true);
+        };
+
+        const openEditTaskModal = (task) => {
+            const proj = projects.find(p => p.tasks.some(t => t.id === task.id));
+            if (proj) setActiveProjectId(proj.id);
+            setEditingTask(task);
+            setIsModalOpen(true);
+        };
+
+        // Helper function to navigate to a task in the board
+        const navigateToTask = (task) => {
+            // If task is completed/cancelled, switch to completed view
+            if (task.status === 'done' || task.status === 'cancel') {
+            setCurrentView('completed');
+            } else {
+            setCurrentView('ongoing');
+            }
+        };
+
+        // CSV Import Function inside Component to access setProjects
+        const handleImportCSV = (event) => {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+            const csvText = e.target.result;
+            const lines = csvText.split('\n').filter(line => line.trim() !== '');
+            const headers = lines[0].split(',').map(h => h.replace(/"/g, '').trim());
+            const projectsMap = {};
+
+            // Helper to parse CSV line correctly handling quotes
+            const parseLine = (line) => {
+                const result = [];
+                let current = '';
+                let inQuotes = false;
+                for (let i = 0; i < line.length; i++) {
+                const char = line[i];
+                if (char === '"') {
+                    inQuotes = !inQuotes;
+                } else if (char === ',' && !inQuotes) {
+                    result.push(current);
+                    current = '';
+                } else {
+                    current += char;
+                }
+                }
+                result.push(current);
+                return result.map(c => c.replace(/"/g, '').trim());
+            };
+
+            for (let i = 1; i < lines.length; i++) {
+                const values = parseLine(lines[i]);
+                const row = {};
+                headers.forEach((header, index) => {
+                row[header] = values[index];
+                });
+
+                const projectName = row['Project'];
+                if (!projectName) continue;
+
+                if (!projectsMap[projectName]) {
+                projectsMap[projectName] = {
+                    id: generateId(),
+                    name: projectName,
+                    color: 'bg-white',
+                    tasks: []
+                };
+                }
+
+                projectsMap[projectName].tasks.push({
+                id: generateId(),
+                name: row['Task Name'],
+                externalRef: row['External Ref'] || '',
+                status: row['Status'] || 'todo',
+                priority: row['Priority'] || '3',
+                weight: row['Weight'] || 'light',
+                start: row['Start Date'] || '',
+                end: row['End Date'] || '',
+                createdAt: row['Created Date'] || new Date().toISOString(),
+                completedAt: row['Completed Date'] || undefined,
+                effort: row['Effort'] || '',
+                level: parseInt(row['Level']) || 0,
+                lineColor: 'bg-blue-500'
+                });
+            }
+
+            // Update state with imported projects (append or replace? Let's replace for a full restore feel, or append for merge. Let's merge/append)
+            setProjects(prev => [...prev, ...Object.values(projectsMap)]);
+            };
+            reader.readAsText(file);
+            // Reset input
+            event.target.value = null;
+        };
+
+        // --- Dashboard Statistics ---
+        const stats = useMemo(() => {
+            let totalProjects = projects.length;
+            let totalTodo = 0;
+            let totalWip = 0;
+            let totalCompleted = 0;
+            let createdThisWeek = 0;
+            let completedThisWeek = 0;
+            const assigneeTasks = {}; // Store raw tasks for workload calc
+            const projectCharts = [];
+
+            // Virtual projects for dashboard tables
+            const completedTasksProjects = []; // For "Completed Task (this week)"
+            const delayedTasksProjects = [];   // For "Tasks Delayed"
+            const newTasksProjects = [];       // For "New Tasks (this week)"
+
+            // Today in local YYYY-MM-DD
+            const today = new Date();
+            const offset = today.getTimezoneOffset();
+            const todayLocal = new Date(today.getTime() - (offset*60*1000));
+            const todayStr = todayLocal.toISOString().split('T')[0];
+
+            projects.forEach(p => {
+            let pTodo = 0;
+            let pWip = 0;
+            let pDone = 0;
+
+            const weeklyDoneTasks = [];
+            const delayedTasks = [];
+            const weeklyNewTasks = [];
+
+            p.tasks.forEach((t, index) => {
+                // Leaf node counting for stats
+                const isLeaf = isTaskLeaf(index, p.tasks);
+                if (!isLeaf) return;
+
+                if (t.status === 'todo') { totalTodo++; pTodo++; }
+                if (t.status === 'wip') { totalWip++; pWip++; }
+                if (t.status === 'done') { totalCompleted++; pDone++; }
+
+                // New (this week): Count ONLY tasks in "Ongoing" (todo/wip) created this week
+                if ((t.status === 'todo' || t.status === 'wip') && isDateInCurrentWeek(t.createdAt)) {
+                createdThisWeek++;
+                weeklyNewTasks.push(t);
+                }
+
+                // Done (this week): Status is Done AND End Date (Completion) is Mon-Sun current week
+                if (t.status === 'done' && isDateInCurrentWeek(t.end)) {
+                completedThisWeek++;
+                weeklyDoneTasks.push(t);
+                }
+
+                // Delayed Tasks: Target Date < Today AND status is not done/cancel
+                if (t.targetDate && t.targetDate < todayStr && (t.status === 'todo' || t.status === 'wip')) {
+                    delayedTasks.push(t);
+                }
+
+                if (t.assignee && (t.status === 'todo' || t.status === 'wip')) {
+                if (!assigneeTasks[t.assignee]) assigneeTasks[t.assignee] = [];
+                assigneeTasks[t.assignee].push(t);
+                }
+            });
+
+            if (weeklyDoneTasks.length > 0) {
+                completedTasksProjects.push({ ...p, tasks: weeklyDoneTasks });
+            }
+
+            if (delayedTasks.length > 0) {
+                delayedTasksProjects.push({ ...p, tasks: delayedTasks });
+            }
+
+            if (weeklyNewTasks.length > 0) {
+                newTasksProjects.push({ ...p, tasks: weeklyNewTasks });
+            }
+
+            if (pTodo + pWip + pDone > 0) {
+                projectCharts.push({
+                name: p.name,
+                data: [
+                    { label: 'Todo', value: pTodo, color: '#60a5fa' },
+                    { label: 'WIP', value: pWip, color: '#fbbf24' },
+                    { label: 'Done', value: pDone, color: '#4ade80' }
+                ]
+                });
+            }
+            });
+
+            return {
+            totalProjects,
+            totalTodo,
+            totalWip,
+            totalCompleted,
+            createdThisWeek,
+            completedThisWeek,
+            assigneeTasks,
+            projectCharts,
+            completedTasksProjects,
+            delayedTasksProjects,
+            newTasksProjects
+            };
+        }, [projects]);
+
+        // --- Rendering ---
+
+        const renderDashboard = () => (
+            <div className="p-8 max-w-7xl mx-auto space-y-8 animate-in fade-in duration-500 overflow-y-auto h-full">
+            <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4">
+                <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex flex-col items-center justify-center text-center">
+                <div className="p-2 rounded-full bg-indigo-100 text-indigo-600 mb-2"><Layers size={20}/></div>
+                <h3 className="text-2xl font-bold text-gray-800">{stats.totalProjects}</h3>
+                <p className="text-xs text-gray-500 font-medium uppercase tracking-wide mt-1">Projects</p>
+                </div>
+
+                <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex flex-col items-center justify-center text-center">
+                <div className="p-2 rounded-full bg-blue-100 text-blue-600 mb-2"><Plus size={20}/></div>
+                <h3 className="text-2xl font-bold text-gray-800">{stats.createdThisWeek}</h3>
+                <p className="text-xs text-gray-500 font-medium uppercase tracking-wide mt-1">New (this week)</p>
+                </div>
+
+                <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex flex-col items-center justify-center text-center">
+                <div className="p-2 rounded-full bg-green-100 text-green-600 mb-2"><CheckCircle2 size={20}/></div>
+                <h3 className="text-2xl font-bold text-gray-800">{stats.completedThisWeek}</h3>
+                <p className="text-xs text-gray-500 font-medium uppercase tracking-wide mt-1">Done (this week)</p>
+                </div>
+
+                <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex flex-col items-center justify-center text-center">
+                <div className="p-2 rounded-full bg-gray-100 text-gray-600 mb-2"><Briefcase size={20}/></div>
+                <h3 className="text-2xl font-bold text-gray-800">{stats.totalTodo}</h3>
+                <p className="text-xs text-gray-500 font-medium uppercase tracking-wide mt-1">Total To Do</p>
+                </div>
+
+                <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex flex-col items-center justify-center text-center">
+                <div className="p-2 rounded-full bg-yellow-100 text-yellow-600 mb-2"><Activity size={20}/></div>
+                <h3 className="text-2xl font-bold text-gray-800">{stats.totalWip}</h3>
+                <p className="text-xs text-gray-500 font-medium uppercase tracking-wide mt-1">Total WIP</p>
+                </div>
+
+                <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex flex-col items-center justify-center text-center">
+                <div className="p-2 rounded-full bg-emerald-100 text-emerald-600 mb-2"><Check size={20}/></div>
+                <h3 className="text-2xl font-bold text-gray-800">{stats.totalCompleted}</h3>
+                <p className="text-xs text-gray-500 font-medium uppercase tracking-wide mt-1">Total Done</p>
+                </div>
+            </div>
+
+            {/* Row 2: Project Summary & Team Workload */}
+            <div className="grid grid-cols-2 gap-8">
+                <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+                <h3 className="text-lg font-bold text-gray-700 mb-6 flex items-center gap-2"><PieChart size={18}/> Project summary</h3>
+
+                {stats.projectCharts.length > 0 ? (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-2 lg:grid-cols-2 gap-6">
+                    {stats.projectCharts.map(pc => (
+                        <div key={pc.name} className="flex flex-col items-center p-4 bg-gray-50 rounded-lg border border-gray-200">
+                        <h4 className="font-semibold text-gray-700 mb-4 truncate w-full text-center" title={pc.name}>{pc.name}</h4>
+                        <DonutChart data={pc.data} size={100} showLegend={false} />
+                        <div className="mt-4 w-full grid grid-cols-3 gap-1 text-[10px] text-center text-gray-500">
+                            <div className="bg-blue-100 py-1 rounded text-blue-700">T: {pc.data[0].value}</div>
+                            <div className="bg-yellow-100 py-1 rounded text-yellow-700">W: {pc.data[1].value}</div>
+                            <div className="bg-green-100 py-1 rounded text-green-700">D: {pc.data[2].value}</div>
+                        </div>
+                        </div>
+                    ))}
+                    </div>
+                ) : (
+                    <div className="text-center py-10 text-gray-400 italic">No project data available</div>
+                )}
+                </div>
+
+                <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+                <h3 className="text-lg font-bold text-gray-700 mb-6 flex items-center gap-2"><User size={18}/> Team Workload</h3>
+                {Object.keys(stats.assigneeTasks).length === 0 ? (
+                    <div className="flex h-40 items-center justify-center text-gray-400 italic">No active tasks assigned</div>
+                ) : (
+                    <div className="flex flex-col gap-4">
+                    {Object.entries(stats.assigneeTasks).map(([name, tasks]) => {
+                        // Sort by weight
+                        const sortedTasks = [...tasks].sort((a, b) => {
+                            const wa = a.weight || 'light';
+                            const wb = b.weight || 'light';
+                            const valA = wa === 'heavy' ? 3 : wa === 'medium' ? 2 : 1;
+                            const valB = wb === 'heavy' ? 3 : wb === 'medium' ? 2 : 1;
+                            return valB - valA;
+                        });
+
+                        const score = tasks.reduce((acc, t) => {
+                            const w = t.weight || 'light';
+                            return acc + (w === 'heavy' ? 3 : w === 'medium' ? 2 : 1);
+                        }, 0);
+                        return { name, tasks: sortedTasks, score };
+                    })
+                    .sort((a, b) => b.score - a.score)
+                    .slice(0, 8)
+                    .map(({ name, tasks }) => (
+                        <div key={name} className="flex items-center gap-4 bg-gray-50 p-3 rounded-lg border border-gray-100">
+                        <div className="w-8 h-8 rounded-full bg-white flex items-center justify-center text-xs font-bold text-gray-600 border border-gray-200 shrink-0">
+                            {name.substring(0,2).toUpperCase()}
+                        </div>
+                        <div className="flex-1 flex flex-col justify-center">
+                            <div className="flex justify-between text-sm mb-1">
+                            <span className="font-medium text-gray-700">{name}</span>
+                            <span className="text-gray-500 text-xs">{tasks.length} tasks</span>
+                            </div>
+                            {/* Linear Bar Composition */}
+                            <div className="flex h-3 w-full bg-gray-200 rounded-full overflow-hidden">
+                                {tasks.map(t => {
+                                    const w = t.weight || 'light';
+                                    const widthClass = w === 'heavy' ? 'w-9' : w === 'medium' ? 'w-6' : 'w-3';
+                                    const colorClass = w === 'heavy' ? 'bg-red-600' : w === 'medium' ? 'bg-purple-500' : 'bg-green-500';
+
+                                    return (
+                                        <div
+                                            key={t.id}
+                                            className={`h-full border-r border-white/20 last:border-0 ${widthClass} ${colorClass} shrink-0`}
+                                            title={`${t.name} (${w})`}
+                                        />
+                                    )
+                                })}
+                            </div>
+                        </div>
+                        </div>
+                    ))}
+                    </div>
+                )}
+                </div>
+            </div>
+
+            {/* Row 3: New Tasks */}
+            <div className="mt-8 bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+                    <div className="flex justify-between items-center mb-4">
+                        <h3 className="text-lg font-bold text-gray-700 flex items-center gap-2">
+                            <Sparkles size={18} className="text-blue-500"/> New Tasks (this week)
+                        </h3>
+                    </div>
+
+                    {stats.newTasksProjects.length === 0 ? (
+                        <p className="text-gray-400 text-sm italic">No new tasks this week.</p>
+                    ) : (
+                        <div className="grid grid-cols-2 gap-6">
+                            <div>
+                                <h4 className="text-xs font-bold text-gray-500 uppercase mb-2 flex items-center gap-2">
+                                    <div className="w-2 h-2 rounded-full bg-blue-500"></div> To Do
+                                </h4>
+                                {stats.newTasksProjects.map(p => {
+                                    const tasks = p.tasks.filter(t => t.status === 'todo');
+                                    if (tasks.length === 0) return null;
+                                    const borderColorClass = PROJECT_BORDER_COLORS[p.color] || 'border-gray-200';
+                                    return (
+                                        <div key={p.id} className={`mb-4 pl-3 border-l-4 ${borderColorClass}`}>
+                                            <div className="text-xs font-bold text-gray-700 mb-1">{p.name}</div>
+                                            {tasks.map(t => (
+                                                <div key={t.id} className="bg-gray-50 p-2 mb-1 rounded text-sm border border-gray-100 text-gray-600">
+                                                    {t.name}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )
+                                })}
+                            </div>
+                            <div>
+                                <h4 className="text-xs font-bold text-gray-500 uppercase mb-2 flex items-center gap-2">
+                                    <div className="w-2 h-2 rounded-full bg-yellow-500"></div> In Progress
+                                </h4>
+                                {stats.newTasksProjects.map(p => {
+                                    const tasks = p.tasks.filter(t => t.status === 'wip');
+                                    if (tasks.length === 0) return null;
+                                    const borderColorClass = PROJECT_BORDER_COLORS[p.color] || 'border-gray-200';
+                                    return (
+                                        <div key={p.id} className={`mb-4 pl-3 border-l-4 ${borderColorClass}`}>
+                                            <div className="text-xs font-bold text-gray-700 mb-1">{p.name}</div>
+                                            {tasks.map(t => (
+                                                <div key={t.id} className="bg-gray-50 p-2 mb-1 rounded text-sm border border-gray-100 text-gray-600">
+                                                    {t.name}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )
+                                })}
+                            </div>
+                        </div>
+                    )}
+                </div>
+
+                {/* Row 4: Delayed & Completed */}
+                <div className="grid grid-cols-2 gap-8 mt-8">
+                    {/* Tasks Delayed Table */}
+                    <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+                        <div className="flex justify-between items-center mb-4">
+                            <h3 className="text-lg font-bold text-gray-700 flex items-center gap-2">
+                                <AlertCircle size={18} className="text-red-500"/> Tasks Delayed
+                            </h3>
+                        </div>
+
+                        {stats.delayedTasksProjects.length === 0 ? (
+                            <p className="text-gray-400 text-sm italic">No tasks delayed.</p>
+                        ) : (
+                            <div className="space-y-4">
+                            {stats.delayedTasksProjects.map(p => (
+                                renderProjectRow(p, [
+                                    { title: 'Delayed', status: 'delayed', statuses: ['todo', 'wip'] }
+                                ])
+                            ))}
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Completed tasks in this week */}
+                    <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+                        <div className="flex justify-between items-center mb-4">
+                            <h3 className="text-lg font-bold text-gray-700 flex items-center gap-2">
+                                <CheckCircle2 size={18} /> Completed Task (this week)
+                            </h3>
+                        </div>
+
+                        {stats.completedTasksProjects.length === 0 ? (
+                            <p className="text-gray-400 text-sm italic">No tasks completed this week.</p>
+                        ) : (
+                            <div className="space-y-4">
+                            {stats.completedTasksProjects.map(p => (
+                                renderProjectRow(p, [
+                                    { title: 'Completed (This Week)', status: 'done', statuses: ['done'] }
+                                ])
+                            ))}
+                            </div>
+                        )}
+                    </div>
+                </div>
+            </div>
+        );
+
+        const renderProjectRow = (project, columns) => {
+            const todoCount = project.tasks.filter(t => t.status === 'todo' && isTaskLeaf(project.tasks.indexOf(t), project.tasks)).length;
+            const wipCount = project.tasks.filter(t => t.status === 'wip' && isTaskLeaf(project.tasks.indexOf(t), project.tasks)).length;
+            const doneCount = project.tasks.filter(t => t.status === 'done' && isTaskLeaf(project.tasks.indexOf(t), project.tasks)).length;
+
+            // Determine if this is a real project or a filtered one for the dashboard
+            // Check if it has a special dashboard property we inject
+            // const isDashboardView = project.id === 'dashboard-completed' || !projects.find(p => p.id === project.id);
+            // Actually, since we're creating copies in stats, we can just check context or assume dashboard use if passed subset
+            // Simpler check: are we rendering for dashboard layout? The caller handles layout container (grid-cols-1 vs dynamic)
+            // Here we just render what we are given.
+
+            // We want to differentiate between the Main Board view (with header controls) and Dashboard list view (simpler)
+            // We can infer this by checking currentView state.
+            const isMainBoard = currentView === 'ongoing' || currentView === 'completed';
+
+            const gridClass = isMainBoard
+                ? `grid grid-cols-${columns.length} divide-x divide-gray-200/30`
+                : 'grid grid-cols-1';
+
+            const borderColorClass = PROJECT_BORDER_COLORS[project.color] || 'border-gray-200';
+
+            return (
+            <div key={project.id} className={`rounded-xl shadow-sm border border-gray-200 overflow-hidden ${project.color || 'bg-white'} mb-4 ${!isMainBoard ? `border-l-4 ${borderColorClass}` : ''}`}>
+                <div className="bg-white/60 p-4 border-b border-gray-200/60 flex justify-between items-center backdrop-blur-sm">
+                <div className="flex items-center gap-3">
+                    <h3 className="font-bold text-gray-800 flex items-center gap-2">
+                    <FolderKanban size={18} className="text-blue-500"/>
+                    {project.name}
+                    </h3>
+                    {isMainBoard && (
+                        <div className="text-xs font-medium text-gray-500 flex gap-2 ml-4 bg-white/50 px-2 py-1 rounded-md border border-gray-100">
+                        {currentView === 'ongoing' ? (
+                            <>
+                                <span>TODO: {todoCount}</span>
+                                <span className="text-gray-300">|</span>
+                                <span>WIP: {wipCount}</span>
+                            </>
+                        ) : (
+                            <span>Completed: {doneCount}</span>
+                        )}
+                        </div>
+                    )}
+
+                    {isMainBoard && (
+                        <div className="relative">
+                        <button
+                            onClick={(e) => {
+                            e.stopPropagation();
+                            setActiveProjectColorPickerId(activeProjectColorPickerId === project.id ? null : project.id);
+                            }}
+                            className="p-1.5 hover:bg-gray-200/50 rounded-full text-gray-400 hover:text-gray-600 transition-all"
+                            title="Project Color"
+                        >
+                            <Palette size={14} />
+                        </button>
+                        {activeProjectColorPickerId === project.id && (
+                            <div className="absolute left-full top-0 ml-2 z-50">
+                            <ColorPicker
+                                colors={PROJECT_BG_COLORS}
+                                onSelect={(c) => handleUpdateProjectColor(project.id, c)}
+                                onClose={() => setActiveProjectColorPickerId(null)}
+                            />
+                            </div>
+                        )}
+                        </div>
+                    )}
+                </div>
+
+                {isMainBoard && (
+                    <div className="flex items-center gap-2">
+                    <button
+                        onClick={() => openNewTaskModal(project.id)}
+                        className="text-xs bg-white/80 border border-gray-300 hover:border-blue-400 hover:text-blue-600 px-3 py-1.5 rounded-md transition-all flex items-center gap-1 font-medium"
+                    >
+                        <Plus size={14} /> Add Task
+                    </button>
+                    <button
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            deleteProject(project.id);
+                        }}
+                        className="p-1.5 hover:bg-red-100 text-gray-400 hover:text-red-500 rounded-md transition-all"
+                        title="Delete Project"
+                    >
+                        <Trash2 size={14} />
+                    </button>
+                    </div>
+                )}
+                </div>
+
+                <div className={gridClass}>
+                {columns.map((col, idx) => (
+                    <div key={idx} className={`p-4 ${idx % 2 === 0 ? 'bg-white/30' : 'bg-white/10'}`}>
+                    <div className="min-h-[50px]">
+                        <KanbanColumn
+                        title={col.title}
+                        status={col.status}
+                        color="hidden"
+                        tasks={project.tasks.filter(t => {
+                            // Standard status filter
+                            let match = false;
+
+                            if (col.status === 'delayed') {
+                                match = true;
+                            } else {
+                                match = col.statuses.includes(t.status);
+                            }
+
+                            // Search filter
+                            if (match && searchQuery) {
+                                match = t.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                                        (t.assignee && t.assignee.toLowerCase().includes(searchQuery.toLowerCase()));
+                            }
+
+                            return match;
+                        })}
+                        onDropTask={updateTaskStatus}
+                        onEditTask={isMainBoard ? openEditTaskModal : navigateToTask} // Dashboard click navigates instead of edit
+                        onDeleteTask={deleteTask}
+                        onStatusChange={updateTaskStatus}
+                        onColorChange={updateTaskColor}
+                        projectId={project.id}
+                        activeColorPickerId={activeTaskColorPickerId}
+                        setActiveColorPickerId={setActiveTaskColorPickerId}
+                        onQuickAdd={handleQuickAddTask}
+                        onDropOnTask={handleDropOnTask}
+                        />
+                    </div>
+                    </div>
+                ))}
+                </div>
+            </div>
+            );
+        };
+
+        return (
+            <div className="flex flex-col h-screen w-full bg-gray-50 font-sans text-gray-900">
+            <header className="h-16 bg-white border-b flex items-center justify-between px-6 shadow-sm z-20 shrink-0">
+                <div className="flex items-center gap-8">
+                <h1 className="text-xl font-black text-gray-800 tracking-wider flex items-center gap-2">
+                    Tasks Management
+                </h1>
+
+                <nav className="flex gap-1 bg-gray-100/50 p-1 rounded-lg">
+                    <button
+                    onClick={() => setCurrentView('dashboard')}
+                    className={`flex items-center gap-2 px-4 py-1.5 rounded-md text-sm font-medium transition-all ${currentView === 'dashboard' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-200/50'}`}
+                    >
+                    <LayoutDashboard size={16} /> Dashboard
+                    </button>
+                    <button
+                    onClick={() => setCurrentView('ongoing')}
+                    className={`flex items-center gap-2 px-4 py-1.5 rounded-md text-sm font-medium transition-all ${currentView === 'ongoing' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-200/50'}`}
+                    >
+                    <KanbanSquare size={16} /> Ongoing
+                    </button>
+                    <button
+                    onClick={() => setCurrentView('completed')}
+                    className={`flex items-center gap-2 px-4 py-1.5 rounded-md text-sm font-medium transition-all ${currentView === 'completed' ? 'bg-white text-green-600 shadow-sm' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-200/50'}`}
+                    >
+                    <Check size={16} /> Completed
+                    </button>
+                </nav>
+                </div>
+
+                <div className="flex items-center gap-4">
+                <div className="relative hidden md:block">
+                    <Search size={16} className="absolute left-3 top-2.5 text-gray-400" />
+                    <input
+                    type="text"
+                    placeholder="Search tasks..."
+                    className="pl-9 pr-4 py-2 bg-gray-100 rounded-full text-xs focus:bg-white focus:ring-2 focus:ring-blue-100 border border-transparent focus:border-blue-200 outline-none transition-all w-48"
+                    value={searchQuery}
+                    onChange={e => setSearchQuery(e.target.value)}
+                    />
+                </div>
+
+                <div className="h-6 w-px bg-gray-200 mx-1"></div>
+
+                {/* Import + Add Project (Removed Export) */}
+                <div className="flex items-center gap-2">
+                    <input
+                    type="file"
+                    accept=".csv"
+                    className="hidden"
+                    ref={fileInputRef}
+                    onChange={(e) => handleImportCSV(e)}
+                    />
+                    <div className="flex bg-gray-100 rounded-lg p-1">
+                    <button
+                        onClick={() => exportToCSV(projects)}
+                        className="p-1.5 hover:bg-white rounded-md text-gray-500 hover:text-blue-600 transition-all shadow-sm"
+                        title="Export CSV"
+                    >
+                        <Download size={16} />
+                    </button>
+                    <button
+                        onClick={() => fileInputRef.current?.click()}
+                        className="p-1.5 hover:bg-white rounded-md text-gray-500 hover:text-blue-600 transition-all shadow-sm"
+                        title="Import CSV"
+                    >
+                        <Upload size={16} />
+                    </button>
+                    </div>
+
+                    <button
+                    onClick={() => setIsProjectModalOpen(true)}
+                    className="flex items-center gap-2 bg-gray-800 hover:bg-gray-700 text-white px-3 py-2 rounded-lg text-sm font-medium transition-all"
+                    title="Add New Project"
+                    >
+                    <Plus size={16} /> <span className="hidden lg:inline">Project</span>
+                    </button>
+                </div>
+                </div>
+            </header>
+
+            <main className="flex-1 overflow-hidden bg-gray-50 relative" onClick={() => { setActiveTaskColorPickerId(null); setActiveProjectColorPickerId(null); }}>
+                {currentView === 'dashboard' && renderDashboard()}
+
+                {currentView === 'ongoing' && (
+                <div className="h-full overflow-y-auto p-6 space-y-8">
+                    <div className="grid grid-cols-2 gap-4 mb-2 px-4">
+                    <h4 className="text-xs font-bold text-gray-500 uppercase flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-blue-500"></div> To Do</h4>
+                    <h4 className="text-xs font-bold text-gray-500 uppercase flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-yellow-500"></div> In Progress</h4>
+                    </div>
+                    {projects.map(project => {
+                    const hasMatchingTasks = project.tasks.some(t =>
+                        t.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                        (t.assignee && t.assignee.toLowerCase().includes(searchQuery.toLowerCase()))
+                    );
+                    if (searchQuery && !hasMatchingTasks) return null;
+
+                    return renderProjectRow(project, [
+                        { title: '', status: 'todo', statuses: ['todo'] },
+                        { title: '', status: 'wip', statuses: ['wip'] }
+                    ]);
+                    })}
+
+                    {projects.length === 0 && (
+                    <div className="text-center py-20 text-gray-400">
+                        <p>No projects found. Click "+ Project" to start.</p>
+                    </div>
+                    )}
+                </div>
+                )}
+
+                {currentView === 'completed' && (
+                <div className="h-full overflow-y-auto p-6 space-y-8">
+                    <div className="grid grid-cols-2 gap-4 mb-2 px-4">
+                    <h4 className="text-xs font-bold text-gray-500 uppercase flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-green-500"></div> Completed</h4>
+                    <h4 className="text-xs font-bold text-gray-500 uppercase flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-red-500"></div> Cancelled</h4>
+                    </div>
+                    {projects.map(project => {
+                    const hasCompleted = project.tasks.some(t => t.status === 'done' || t.status === 'cancel');
+                    if (!hasCompleted) return null;
+
+                    return renderProjectRow(project, [
+                        { title: '', status: 'done', statuses: ['done'] },
+                        { title: '', status: 'cancel', statuses: ['cancel'] }
+                    ]);
+                    })}
+                </div>
+                )}
+            </main>
+
+            <div className="fixed bottom-2 right-2 text-[10px] text-gray-300">v27.0</div>
+
+            <TaskModal
+                isOpen={isModalOpen}
+                onClose={() => setIsModalOpen(false)}
+                task={editingTask}
+                onSave={handleSaveTask}
+            />
+
+            <ProjectModal
+                isOpen={isProjectModalOpen}
+                onClose={() => setIsProjectModalOpen(false)}
+                onSave={handleAddProject}
+            />
+            </div>
+        );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
